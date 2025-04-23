@@ -135,7 +135,7 @@ RouteFilterUpdater Configuration Changes:
 
 ## Ліцензія
 
-Проєкт ліцензовано за Apache License, Version 2.0. Дивіться файл LICENSE для деталей.
+Проєкт ліцензовано за [Apache License 2.0](LICENSE).
 
 ## Контакти
 
