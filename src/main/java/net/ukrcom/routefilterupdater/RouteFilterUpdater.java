@@ -36,7 +36,8 @@ public class RouteFilterUpdater {
     private static String ROUTER_IP;
     private static String USERNAME;
     private static String PASSWORD;
-    private static String BGP_GROUP;
+    private static String BGP_GROUP_IPV4;
+    private static String BGP_GROUP_IPV6;
     private static String SELF_AS;
     private static String IRR_CACHE_FILE;
     private static String[] EXCEPT_REGEX_VALUES;
@@ -157,19 +158,15 @@ public class RouteFilterUpdater {
                             return;
                         }
                         switch (level) {
-                            case com.jcraft.jsch.Logger.DEBUG:
+                            case com.jcraft.jsch.Logger.DEBUG ->
                                 LOGGER.debug("JSch [{}]: {}", level, message);
-                                break;
-                            case com.jcraft.jsch.Logger.INFO:
+                            case com.jcraft.jsch.Logger.INFO ->
                                 LOGGER.debug("JSch [{}]: {}", level, message);
-                                break;
-                            case com.jcraft.jsch.Logger.WARN:
+                            case com.jcraft.jsch.Logger.WARN ->
                                 LOGGER.warn("JSch [{}]: {}", level, message);
-                                break;
-                            case com.jcraft.jsch.Logger.ERROR:
+                            case com.jcraft.jsch.Logger.ERROR ->
                                 LOGGER.error("JSch [{}]: {}", level, message);
-                                break;
-                            default:
+                            default ->
                                 LOGGER.debug("JSch [{}]: {}", level, message);
                         }
                     }
@@ -287,7 +284,8 @@ public class RouteFilterUpdater {
         ROUTER_IP = props.getProperty("ROUTER_IP");
         USERNAME = props.getProperty("USERNAME");
         PASSWORD = System.getenv("ROUTER_PASSWORD") != null ? System.getenv("ROUTER_PASSWORD") : props.getProperty("PASSWORD");
-        BGP_GROUP = props.getProperty("BGP_GROUP");
+        BGP_GROUP_IPV4 = props.getProperty("BGP_GROUP_IPV4");
+        BGP_GROUP_IPV6 = props.getProperty("BGP_GROUP_IPV6");
         SELF_AS = props.getProperty("SELF_AS");
         IRR_CACHE_FILE = props.getProperty("IRR_CACHE_FILE", "as12593_irr_objects.txt");
         EXCEPT_REGEX_VALUES = props.getProperty("EXCEPT_REGEX", "Client_world_uaix_in,Client_PFTS_in,TE_IN").split(",\\s*");
@@ -306,7 +304,7 @@ public class RouteFilterUpdater {
         LOGGER.debug("Loaded REPORT_TO: {}", REPORT_TO);
         LOGGER.debug("Loaded REPORT_FROM: {}", REPORT_FROM);
 
-        for (String prop : new String[]{ROUTER_IP, USERNAME, PASSWORD, BGP_GROUP, SELF_AS, IRR_CACHE_FILE, RTCONFIG_PATH}) {
+        for (String prop : new String[]{ROUTER_IP, USERNAME, PASSWORD, BGP_GROUP_IPV4, BGP_GROUP_IPV6, SELF_AS, IRR_CACHE_FILE, RTCONFIG_PATH}) {
             if (prop == null || prop.isEmpty()) {
                 throw new IOException("Missing or empty required property in RouteFilterUpdater.properties");
             }
@@ -529,16 +527,18 @@ public class RouteFilterUpdater {
         com.jcraft.jsch.Session session = connect();
         try {
             String bgpConfig = executeSshCommand(session,
-                    "show configuration protocols bgp | display set | match neighbor | match peer-as | match \" Clients \" | no-more");
+                    "show configuration protocols bgp group " + BGP_GROUP_IPV4 + " | display set | match neighbor | match peer-as | no-more");
             String whoisData = executeWhoisQuery("-r " + SELF_AS, WHOIS_SERVER);
-            LOGGER.debug("whoisData: {}", whoisData);
-            try (PrintWriter writer = new PrintWriter("whois_debug.txt", "UTF-8")) {
-                writer.println(whoisData);
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug("whoisData: {}", whoisData);
+                try (PrintWriter writer = new PrintWriter("whois_debug.txt", "UTF-8")) {
+                    writer.println(whoisData);
+                }
             }
 
             StringBuilder irrContent = new StringBuilder();
             irrContent.append("peering-set: prng-fictionalinternetexchangev4\n");
-            Pattern neighborPattern = Pattern.compile("set\\s+protocols\\s+bgp\\s+group\\s+Clients\\s+neighbor\\s+([0-9.]+)\\s+peer-as\\s+(\\d+)");
+            Pattern neighborPattern = Pattern.compile("set\\s+protocols\\s+bgp\\s+group\\s+" + Pattern.quote(BGP_GROUP_IPV4) + "\\s+neighbor\\s+([0-9.]+)\\s+peer-as\\s+(\\d+)");
             Matcher matcher = neighborPattern.matcher(bgpConfig);
             while (matcher.find()) {
                 String neighborIp = matcher.group(1);
@@ -609,7 +609,7 @@ public class RouteFilterUpdater {
 
     private static List<Neighbor> parseNeighbors(com.jcraft.jsch.Session session) throws JSchException, IOException {
         String exceptClause = " except \"" + String.join("|", EXCEPT_REGEX_VALUES) + "\"";
-        String command = "show configuration protocols bgp group " + BGP_GROUP
+        String command = "show configuration protocols bgp group " + BGP_GROUP_IPV4
                 + " | display set | match \"(peer-as|import|description)\" | match neighbor |" + exceptClause + " | no-more";
         String output = executeSshCommand(session, command);
         LOGGER.debug("Raw BGP config output: {}", output);
@@ -638,7 +638,7 @@ public class RouteFilterUpdater {
             }
         }
         if (neighbors.isEmpty()) {
-            LOGGER.warn("No BGP neighbors found for group {}", BGP_GROUP);
+            LOGGER.warn("No BGP neighbors found for group {}", BGP_GROUP_IPV4);
         }
         return new ArrayList<>(neighbors.values());
     }
@@ -662,7 +662,7 @@ public class RouteFilterUpdater {
                     return neighbor.peerAs;
                 }
             }
-            out.printf("deactivate protocols bgp group %s neighbor %s\n", BGP_GROUP, neighbor.ip);
+            out.printf("deactivate protocols bgp group %s neighbor %s\n", BGP_GROUP_IPV4, neighbor.ip);
             return null;
         }
         return export;
@@ -813,7 +813,7 @@ public class RouteFilterUpdater {
                                 printRouteFilters(out, neighbor, "p", prefixes);
                             }
                         } else {
-                            out.printf("deactivate protocols bgp group %s neighbor %s\n", BGP_GROUP, neighbor.ip);
+                            out.printf("deactivate protocols bgp group %s neighbor %s\n", BGP_GROUP_IPV4, neighbor.ip);
                         }
                     }
                 }
