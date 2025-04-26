@@ -472,7 +472,7 @@ public class RouteFilterUpdater {
             validateIrrFile();
             LOGGER.info("IRR objects for {} written to {}", isIPv6 ? "IPv6" : "IPv4", IRR_CACHE_FILE);
         } finally {
-            session.disconnect();
+            disconnectAndSleep(session);
         }
     }
 
@@ -482,8 +482,8 @@ public class RouteFilterUpdater {
         com.jcraft.jsch.Session session = jsch.getSession(USERNAME, ROUTER_IP, 22);
         session.setPassword(PASSWORD);
         session.setConfig("StrictHostKeyChecking", "no");
-        session.setConfig("ServerAliveInterval", "60");
-        session.setConfig("ServerAliveCountMax", "3");
+        //session.setConfig("ServerAliveInterval", "60");
+        //session.setConfig("ServerAliveCountMax", "3");
         session.connect();
         return session;
     }
@@ -511,10 +511,11 @@ public class RouteFilterUpdater {
 
         if (!channel.isClosed()) {
             LOGGER.warn("SSH command '{}' did not complete within {} ms, forcing disconnect", command, timeoutMs);
-            channel.disconnect();
+            disconnectAndSleep(channel);
         }
 
-        channel.disconnect();
+        disconnectAndSleep(channel);
+
         String result = output.toString("UTF-8");
         String errorOutput = error.toString("UTF-8");
         if (!errorOutput.isEmpty()) {
@@ -552,7 +553,7 @@ public class RouteFilterUpdater {
                 }
             } finally {
                 try {
-                    whois.disconnect();
+                    disconnectAndSleep(whois);
                 } catch (IOException e) {
                     LOGGER.warn("Failed to disconnect WHOIS client", e);
                 }
@@ -794,7 +795,7 @@ public class RouteFilterUpdater {
                 out.println();
             }
         } finally {
-            session.disconnect();
+            disconnectAndSleep(session);
         }
     }
 
@@ -1040,14 +1041,14 @@ public class RouteFilterUpdater {
         } finally {
             if (channel != null) {
                 try {
-                    channel.disconnect();
+                    disconnectAndSleep(channel);
                 } catch (Exception e) {
                     LOGGER.debug("Channel disconnect exception: {}", e.getMessage());
                 }
             }
             if (session != null) {
                 try {
-                    session.disconnect();
+                    disconnectAndSleep(session);
                 } catch (Exception e) {
                     LOGGER.debug("Session disconnect exception: {}", e.getMessage());
                 }
@@ -1264,7 +1265,8 @@ public class RouteFilterUpdater {
                 RTCONFIG_PATH,
                 "-h", WHOIS_SERVER,
                 "-protocol", "rawhoisd",
-                "-i", IRR_CACHE_FILE,
+                "-config", "junos",
+                "-f", IRR_CACHE_FILE,
                 "-s", String.join(",", IRR_SOURCES)
         );
         LOGGER.debug("Starting rtconfig process: {}", String.join(" ", pb.command()));
@@ -1342,4 +1344,28 @@ public class RouteFilterUpdater {
             }
         }
     }
+
+    private static void disconnectAndSleep(Object c) throws IOException {
+        switch (c) {
+            case ChannelExec channelExec ->
+                channelExec.disconnect();
+            case com.jcraft.jsch.Session session ->
+                session.disconnect();
+            case WhoisClient whoisClient ->
+                whoisClient.disconnect();
+            case ChannelShell channelShell ->
+                channelShell.disconnect();
+            default -> {
+                LOGGER.error("Unknown type of Object for disconnect: {}", c.toString());
+                throw new IOException("Unknown type of Object for disconnect: " + c.toString());
+            }
+        }
+        try {
+            Thread.sleep(100 + (long) (Math.random() * 1000));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted during SSH command execution", e);
+        }
+    }
+
 }
