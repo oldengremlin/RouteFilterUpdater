@@ -1346,26 +1346,32 @@ public class RouteFilterUpdater {
     }
 
     private static void disconnectAndSleep(Object c) throws IOException {
-        switch (c) {
-            case ChannelExec channelExec ->
-                channelExec.disconnect();
-            case com.jcraft.jsch.Session session ->
-                session.disconnect();
-            case WhoisClient whoisClient ->
-                whoisClient.disconnect();
-            case ChannelShell channelShell ->
-                channelShell.disconnect();
-            default -> {
-                LOGGER.error("Unknown type of Object for disconnect: {}", c.toString());
-                throw new IOException("Unknown type of Object for disconnect: " + c.toString());
+        if (c != null) {
+            switch (c) {
+                case ChannelExec channelExec ->
+                    channelExec.disconnect();
+                case com.jcraft.jsch.Session session ->
+                    session.disconnect();
+                case WhoisClient whoisClient ->
+                    whoisClient.disconnect();
+                case ChannelShell channelShell ->
+                    channelShell.disconnect();
+                default -> {
+                    LOGGER.error("Unknown type of Object for disconnect: {}", c.toString());
+                    throw new IOException("Unknown type of Object for disconnect: " + c.toString());
+                }
             }
+            LOGGER.debug("Disconnect: {}", c.toString());
         }
         try {
-            Thread.sleep(100 + (long) (Math.random() * 1000));
+            long st = 100 + (long) (Math.random() * 1000);
+            LOGGER.debug("Sleep: {}", st);
+            Thread.sleep(st);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted during SSH command execution", e);
         }
+
     }
 
 }
