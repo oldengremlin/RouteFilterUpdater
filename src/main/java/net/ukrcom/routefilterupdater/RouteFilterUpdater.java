@@ -106,6 +106,30 @@ class Args {
 public class RouteFilterUpdater {
 
     // Поля класу
+//    private static final String IPV4_REGEX = "[0-9.]+";
+//    private static final String IPV6_REGEX = "[0-9a-fA-F:]+";
+    private static final String IPV4_REGEX = "(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}"
+            + "(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)";
+    private static final String IPV6_REGEX
+            = "(?:"
+            // Повний формат
+            + "(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}"
+            // Скорочення справа
+            + "|(?:[0-9a-fA-F]{1,4}:){1,7}:"
+            // Скорочення зліва
+            + "|:(?:[0-9a-fA-F]{1,4}:){1,7}"
+            // Скорочення посередині
+            + "|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}"
+            + "|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}"
+            + "|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}"
+            + "|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}"
+            + "|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}"
+            + "|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}"
+            + "|::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}"
+            + "|::[0-9a-fA-F]{1,4}"
+            // Скорочення до ::
+            + "|::"
+            + ")(?:\\%[\\w\\d]+)?";
     private static final Logger LOGGER = LoggerFactory.getLogger(RouteFilterUpdater.class);
     private static String ROUTER_IP;
     private static String ROUTER_IP_IPV6;
@@ -365,7 +389,7 @@ public class RouteFilterUpdater {
             String bgpGroup = isIPv6 ? BGP_GROUP_IPV6 : BGP_GROUP_IPV4;
             String routerIp = isIPv6 ? ROUTER_IP_IPV6 : ROUTER_IP;
             String peeringSetName = isIPv6 ? "prng-fictionalinternetexchangev6" : "prng-fictionalinternetexchangev4";
-            String ipRegex = isIPv6 ? "([0-9a-fA-F:]+)" : "([0-9.]+)";
+            String ipRegex = isIPv6 ? "(" + IPV6_REGEX + ")" : "(" + IPV4_REGEX + ")";
             String forbiddenPrefixes = isIPv6
                     ? "NOT { ::/0^+, fe80::/10^+ }"
                     : "NOT { 10.0.0.0/8^+, 169.254.0.0/16^+, 172.16.0.0/12^+, 192.0.2.0/24^+, 192.168.0.0/16^+, 198.18.0.0/15^+, 203.0.113.0/24^+, 0.0.0.0/0, 127.0.0.0/8^+, 224.0.0.0/3^+ }";
@@ -386,7 +410,8 @@ public class RouteFilterUpdater {
 
             Map<String, String> neighborIps = new HashMap<>();
             Map<String, List<String>> neighborPrefixes = new HashMap<>();
-            Pattern neighborPattern = Pattern.compile("set\\s+protocols\\s+bgp\\s+group\\s+" + Pattern.quote(bgpGroup) + "\\s+neighbor\\s+" + ipRegex + "\\s+peer-as\\s+(\\d+)");
+//            Pattern neighborPattern = Pattern.compile("set\\s+protocols\\s+bgp\\s+group\\s+" + Pattern.quote(bgpGroup) + "\\s+neighbor\\s+" + ipRegex + "\\s+peer-as\\s+(\\d+)");
+            Pattern neighborPattern = Pattern.compile("group\\s+" + Pattern.quote(bgpGroup) + "\\s+neighbor\\s+" + ipRegex + "\\s+peer-as\\s+(\\d+)");
             Matcher matcher = neighborPattern.matcher(bgpConfig);
             while (matcher.find()) {
                 String neighborIp = matcher.group(1);
@@ -519,9 +544,9 @@ public class RouteFilterUpdater {
         String result = output.toString("UTF-8");
         String errorOutput = error.toString("UTF-8");
         if (!errorOutput.isEmpty()) {
-            LOGGER.warn("SSH command '{}' error output: {}", command, errorOutput.replace("\n", "\\n").replace("\r", "\\r"));
+            LOGGER.warn("SSH command '{}' error output: {}", command, replaceControlCharsWithUnicode(errorOutput));
         }
-        LOGGER.debug("SSH command '{}' output: {}", command, result.replace("\n", "\\n").replace("\r", "\\r"));
+        LOGGER.debug("SSH command '{}' output: {}", command, replaceControlCharsWithUnicode(result));
         return result;
     }
 
@@ -805,37 +830,57 @@ public class RouteFilterUpdater {
         String command = "show configuration protocols bgp group " + bgpGroup
                 + " | display set | match \"(peer-as|import|description)\" | match neighbor |" + exceptClause + " | no-more";
         String output = executeSshCommand(session, command);
-        LOGGER.debug("Raw BGP config output: {}", output);
+        LOGGER.debug("Raw line before processing: [{}]", replaceControlCharsWithUnicode(output));
         if (output.contains("error:") || output.trim().isEmpty()) {
             LOGGER.error("Failed to retrieve BGP neighbors: {}", output);
             throw new IOException("Failed to retrieve BGP neighbors: " + output);
         }
-        String ipRegex = isIPv6 ? "[0-9a-fA-F:]+" : "[0-9.]+";
-        Pattern reDescription = Pattern.compile("^set\\s+protocols\\s+bgp\\s+group\\s+[^\\s]+\\s+neighbor\\s+(" + ipRegex + ")\\s+description\\s+(.+)");
-        Pattern reImport = Pattern.compile("^set\\s+protocols\\s+bgp\\s+group\\s+[^\\s]+\\s+neighbor\\s+(" + ipRegex + ")\\s+import\\s+(.+)");
-        Pattern rePeerAs = Pattern.compile("^set\\s+protocols\\s+bgp\\s+group\\s+[^\\s]+\\s+neighbor\\s+(" + ipRegex + ")\\s+peer-as\\s+(.+)");
+        String ipRegex = isIPv6 ? IPV6_REGEX : IPV4_REGEX;
+        Pattern reDescription = Pattern.compile("neighbor\\s+(" + ipRegex + ")\\s+description\\s+(.+)");
+        Pattern reImport = Pattern.compile("neighbor\\s+(" + ipRegex + ")\\s+import\\s+(.+)");
+        Pattern rePeerAs = Pattern.compile("neighbor\\s+(" + ipRegex + ")\\s+peer-as\\s+(.+)");
         Map<String, Neighbor> neighbors = new HashMap<>();
 
         for (String line : output.split("\n")) {
             if (line.trim().isEmpty()) {
                 continue;
             }
+            LOGGER.debug("Raw line before processing: [{}]", replaceControlCharsWithUnicode(line));
+            line = line.replaceAll("[\\p{Cntrl}]", "").trim();
             Matcher md = reDescription.matcher(line);
             Matcher mi = reImport.matcher(line);
             Matcher mp = rePeerAs.matcher(line);
-            if (!md.matches() && !mi.matches() && !mp.matches()) {
-                LOGGER.debug("Line did not match any pattern: {}", line);
-            }
-            if (md.matches()) {
+            if (md.find()) {
                 neighbors.computeIfAbsent(md.group(1), Neighbor::new).description = md.group(2);
-            } else if (mi.matches()) {
+                LOGGER.debug("Matched description: IP={}, Description={}", md.group(1), md.group(2));
+
+            } else if (mi.find()) {
                 neighbors.computeIfAbsent(mi.group(1), Neighbor::new).importPolicy = mi.group(2);
-            } else if (mp.matches()) {
+                LOGGER.debug("Matched import: IP={}, Import={}", mi.group(1), mi.group(2));
+
+            } else if (mp.find()) {
                 neighbors.computeIfAbsent(mp.group(1), Neighbor::new).peerAs = "AS" + mp.group(2);
+                LOGGER.debug("Matched peer-as: IP={}, PeerAs=AS{}", mp.group(1), mp.group(2));
+            } else {
+                LOGGER.debug("Line did not match any pattern: {}", line);
             }
         }
         if (neighbors.isEmpty()) {
             LOGGER.warn("No BGP neighbors found for group {}", bgpGroup);
+        } else {
+            for (Neighbor neighbor : neighbors.values()) {
+                if (neighbor.peerAs == null) {
+                    LOGGER.warn("Neighbor {} is missing peer-as", neighbor.ip);
+                }
+                if (LOGGER.isDebugEnabled()) {
+                    if (neighbor.importPolicy == null) {
+                        LOGGER.debug("Neighbor {} has no import policy", neighbor.ip);
+                    }
+                    if (neighbor.description == null) {
+                        LOGGER.debug("Neighbor {} has no description", neighbor.ip);
+                    }
+                }
+            }
         }
         return new ArrayList<>(neighbors.values());
     }
@@ -893,7 +938,7 @@ public class RouteFilterUpdater {
     private static String checkBgpState(com.jcraft.jsch.Session session, String neighborIp) throws JSchException, IOException {
         String command = String.format("show bgp neighbor %s | match \"(Type:.*State:|Last State:)\"", neighborIp);
         String output = executeSshCommand(session, command);
-        LOGGER.debug("Raw BGP state output for {}: {}", neighborIp, output.replace("\n", "\\n").replace("\r", "\\r"));
+        LOGGER.debug("Raw BGP state output for {}: {}", neighborIp, replaceControlCharsWithUnicode(output));
         String state = "Unknown";
         for (String line : output.split("\n")) {
             if (line.contains("State:")) {
@@ -905,7 +950,7 @@ public class RouteFilterUpdater {
                 }
             }
         }
-        LOGGER.warn("Failed to parse BGP state for {}, output: {}", neighborIp, output.replace("\n", "\\n").replace("\r", "\\r"));
+        LOGGER.warn("Failed to parse BGP state for {}, output: {}", neighborIp, replaceControlCharsWithUnicode(output));
         return state;
     }
 
@@ -998,11 +1043,11 @@ public class RouteFilterUpdater {
                     channel.isConnected(), channel.isClosed(), in.available() == -1);
 
             String initialPrompt = waitForPrompt(reader, in, "operational");
-            LOGGER.debug("Found initial prompt: {}", initialPrompt.replace("\n", "\\n").replace("\r", "\\r"));
+            LOGGER.debug("Found initial prompt: {}", replaceControlCharsWithUnicode(initialPrompt));
 
             LOGGER.debug("Executing initial configure private");
             result = executeCommandWithRetries(channel, in, reader, writer, "configure private\r\n", "config", 30000);
-            LOGGER.debug("configure private output: {}", result.replace("\n", "\\n").replace("\r", "\\r"));
+            LOGGER.debug("configure private output: {}", replaceControlCharsWithUnicode(result));
 
             List<String> configCommands = Files.readAllLines(Paths.get(configFile)).stream()
                     .filter(line -> !line.trim().startsWith("#") && !line.trim().isEmpty())
@@ -1011,13 +1056,13 @@ public class RouteFilterUpdater {
             LOGGER.debug("Applying {} configuration commands", configCommands.size());
             for (String command : configCommands) {
                 result = executeCommandWithRetries(channel, in, reader, writer, command + "\r\n", "config", 30000);
-                LOGGER.debug("Command '{}' output: {}", command, result.replace("\n", "\\n").replace("\r", "\\r"));
+                LOGGER.debug("Command '{}' output: {}", command, replaceControlCharsWithUnicode(result));
             }
 
             String compareResult = executeCommandWithRetries(channel, in, reader, writer, "show | compare | no-more\r\n", "config", 60000);
-            LOGGER.debug("Raw show | compare output before cleaning: [{}]", compareResult.replace("\n", "\\n").replace("\r", "\\r"));
+            LOGGER.debug("Raw show | compare output before cleaning: [{}]", replaceControlCharsWithUnicode(compareResult));
             String cleanedCompare = cleanCompareOutput(compareResult);
-            LOGGER.debug("Cleaned show | compare output: [{}]", cleanedCompare.replace("\n", "\\n").replace("\r", "\\r"));
+            LOGGER.debug("Cleaned show | compare output: [{}]", replaceControlCharsWithUnicode(cleanedCompare));
 
             if (REPORT_TO != null && !REPORT_TO.isEmpty() && REPORT_FROM != null && !REPORT_FROM.isEmpty()) {
                 String sessionId = System.getProperty("session.id", UUID.randomUUID().toString());
@@ -1032,7 +1077,7 @@ public class RouteFilterUpdater {
 
             try {
                 result = executeCommandWithRetries(channel, in, reader, writer, "commit and-quit\r\n", "operational", 120000);
-                LOGGER.debug("commit and-quit output: {}", result.replace("\n", "\\n").replace("\r", "\\r"));
+                LOGGER.debug("commit and-quit output: {}", replaceControlCharsWithUnicode(result));
             } catch (IOException e) {
                 LOGGER.error("commit and-quit failed: {}", e.getMessage());
                 throw e;
@@ -1095,19 +1140,19 @@ public class RouteFilterUpdater {
                     }
 
                     result.append(data);
-                    String sData = data.replace("\n", "\\n").replace("\r", "\\r");
+                    String sData = replaceControlCharsWithUnicode(data);
                     if (LOGGER.isDebugEnabled() && (data.length() > 1 || data.contains("commit") || data.contains("Exiting") || data.contains("noc@"))) {
                         String oData = sData.length() > 80 ? sData.substring(sData.length() - 80) : sData;
                         LOGGER.debug("Received data: [{}] (length: {})", oData, data.length());
                     }
                     String currentOutput = result.toString();
                     if (LOGGER.isDebugEnabled()) {
-                        String sResult = currentOutput.replace("\n", "\\n").replace("\r", "\\r");
+                        String sResult = replaceControlCharsWithUnicode(currentOutput);
                         String oResult = sResult.length() > 80 ? sResult.substring(sResult.length() - 80) : sResult;
                         LOGGER.debug("Current output buffer: [{}]", oResult);
                     }
                     if (promptPattern.matcher(currentOutput).find()) {
-                        LOGGER.debug("Found prompt in output: {}", currentOutput.replace("\n", "\\n").replace("\r", "\\r"));
+                        LOGGER.debug("Found prompt in output: {}", replaceControlCharsWithUnicode(currentOutput));
                         return currentOutput.trim();
                     }
                 }
@@ -1132,7 +1177,7 @@ public class RouteFilterUpdater {
 
                         result.append(rawData);
                         if (LOGGER.isDebugEnabled() && (rawData.length() > 1 || rawData.contains("commit") || rawData.contains("Exiting") || rawData.contains("noc@"))) {
-                            String sRawData = rawData.replace("\n", "\\n").replace("\r", "\\r");
+                            String sRawData = replaceControlCharsWithUnicode(rawData);
                             LOGGER.debug("Direct InputStream read: {} bytes, data: [{}]", bytesRead,
                                     sRawData.length() > 80 ? sRawData.substring(sRawData.length() - 80) : sRawData);
                         }
@@ -1151,7 +1196,7 @@ public class RouteFilterUpdater {
         }
 
         LOGGER.error("Timeout waiting for prompt (mode: {}): {}. Final output: {}", mode, promptRegex,
-                result.toString().replace("\n", "\\n").replace("\r", "\\r"));
+                result.toString().replaceAll("[\\p{Cntrl}]", "\\\\u"));
         throw new IOException("Timeout waiting for prompt (mode: " + mode + ")");
     }
 
@@ -1374,4 +1419,22 @@ public class RouteFilterUpdater {
 
     }
 
+    public static String replaceControlCharsWithUnicode(String input) {
+        if (input == null || input.isEmpty()) {
+            return input;
+        }
+
+        Pattern pattern = Pattern.compile("[\\p{Cntrl}]");
+        Matcher matcher = pattern.matcher(input);
+
+        StringBuffer result = new StringBuffer();
+        while (matcher.find()) {
+            char ch = matcher.group().charAt(0);
+            String unicode = String.format("\\\\U+%04X", (int) ch);
+            matcher.appendReplacement(result, unicode);
+        }
+        matcher.appendTail(result);
+
+        return result.toString();
+    }
 }
