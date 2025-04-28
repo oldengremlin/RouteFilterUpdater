@@ -780,7 +780,7 @@ public class RouteFilterUpdater {
                             .map(p -> "route-filter " + p + " exact accept")
                             .filter(rf -> isValidPrefix(rf, config.ipv4, config.ipv6))
                             .collect(Collectors.toList());
-                    printRouteFilters(out, neighbor, "p", routeFilters);
+                    printRouteFilters(true, out, neighbor, "p", routeFilters);
                 } else {
                     String bgpState = checkBgpState(session, neighbor.ip);
                     if (export == null && !"Established".equals(bgpState)) {
@@ -794,7 +794,7 @@ public class RouteFilterUpdater {
                         routeFilters = routeFilters.stream()
                                 .filter(rf -> isValidPrefix(rf, config.ipv4, config.ipv6))
                                 .collect(Collectors.toList());
-                        printRouteFilters(out, neighbor, "r", routeFilters);
+                        printRouteFilters(false, out, neighbor, "r", routeFilters);
                     } else {
                         LOGGER.warn("No route-filters for {}, trying prefixes", neighbor.peerAs);
                         out.println("# Type: rtconfig did not return any information…");
@@ -803,14 +803,14 @@ public class RouteFilterUpdater {
                                 .filter(p -> isValidPrefix(p, config.ipv4, config.ipv6))
                                 .collect(Collectors.toList());
                         if (!prefixes.isEmpty()) {
-                            printRouteFilters(out, neighbor, "p", prefixes);
+                            printRouteFilters(false, out, neighbor, "p", prefixes);
                         } else if ("Established".equals(bgpState)) {
                             out.println("#! Manual analysis required.");
                             prefixes = getPrefixes(neighbor.peerAs, config.ipv6).stream()
                                     .filter(p -> isValidPrefix(p, config.ipv4, config.ipv6))
                                     .collect(Collectors.toList());
                             if (!prefixes.isEmpty()) {
-                                printRouteFilters(out, neighbor, "p", prefixes);
+                                printRouteFilters(false, out, neighbor, "p", prefixes);
                             }
                         } else {
                             out.printf("deactivate protocols bgp group %s neighbor %s\n", BGP_GROUP_IPV4, neighbor.ip);
@@ -924,7 +924,7 @@ public class RouteFilterUpdater {
                     out.println("#! Manual analysis required.");
                     List<String> prefixes = getPrefixes(neighbor.peerAs, isIPv6);
                     if (!prefixes.isEmpty()) {
-                        printRouteFilters(out, neighbor, "p", prefixes);
+                        printRouteFilters(isIPv6, out, neighbor, "p", prefixes);
                         return neighbor.peerAs;
                     }
                 }
@@ -1003,14 +1003,14 @@ public class RouteFilterUpdater {
         out.printf("## %s : %s : %s : %s : %s\n", neighbor.ip, neighbor.peerAs, export, neighbor.importPolicy, neighbor.description);
     }
 
-    private static void printRouteFilters(PrintWriter out, Neighbor neighbor, String type, List<String> routeFilters) {
-        out.printf("delete policy-options policy-statement %s term accept from\n", neighbor.importPolicy);
+    private static void printRouteFilters(boolean isIPv6, PrintWriter out, Neighbor neighbor, String type, List<String> routeFilters) {
+        out.printf("delete policy-options policy-statement %s term accept" + (isIPv6 ? "_v6" : "") + " from\n", neighbor.importPolicy);
         for (String rf : routeFilters) {
             String cleanRf = rf.replace(";", "").trim();
-            out.printf("set policy-options policy-statement %s term accept from %s\n", neighbor.importPolicy, cleanRf);
+            out.printf("set policy-options policy-statement %s term accept" + (isIPv6 ? "_v6" : "") + " from %s\n", neighbor.importPolicy, cleanRf);
             if (cleanRf.contains("accept")) {
                 String nextPolicy = cleanRf.replace(" accept", " next policy");
-                out.printf("set policy-options policy-statement %s term accept from %s\n", neighbor.importPolicy, nextPolicy);
+                out.printf("set policy-options policy-statement %s term accept" + (isIPv6 ? "_v6" : "") + " from %s\n", neighbor.importPolicy, nextPolicy);
             }
         }
     }
