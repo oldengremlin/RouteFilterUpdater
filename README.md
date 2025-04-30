@@ -50,8 +50,8 @@ RouteFilterUpdater — це утиліта на Java для автоматиза
    USERNAME=your-username
    PASSWORD=your-password
    BGP_GROUP=Clients
-   SELF_AS=AS12593
-   IRR_CACHE_FILE=as12593_irr_objects.txt
+   SELF_AS=AS123456
+   IRR_CACHE_FILE=as123456_irr_objects.txt
    EXCEPT_REGEX=Client_world_uaix_in,Client_PFTS_in,TE_IN
    IRR_SOURCES=RADB,RIPE,APNIC,ARIN,LACNIC,AFRINIC
    RTCONFIG_PATH=/usr/local/bin/rtconfig
