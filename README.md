@@ -139,4 +139,4 @@ RouteFilterUpdater Configuration Changes:
 
 ## Контакти
 
-Для повідомлень про проблеми або запитань відкривайте [issue](https://github.com/oldengremlin/RouteFilterUpdater/issues) на GitHub або звертайтеся до maintainer’а за адресою \[olden@ukr-com.net\].
+Для повідомлень про проблеми або запитань відкривайте [issue](https://github.com/oldengremlin/RouteFilterUpdater/issues) на GitHub.
