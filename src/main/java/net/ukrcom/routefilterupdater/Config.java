@@ -77,7 +77,8 @@ public class Config {
         exceptPatterns = except.isBlank() ? new String[0] : except.split(",\\s*");
 
         bgpq4Path    = require(p, "BGPQ4_PATH");
-        bgpq4Sources = p.getProperty("BGPQ4_SOURCES", "");
+        // Accept legacy IRR_SOURCES as fallback
+        bgpq4Sources = p.getProperty("BGPQ4_SOURCES", p.getProperty("IRR_SOURCES", ""));
         whoisServer  = p.getProperty("WHOIS_SERVER", "whois.ripe.net");
 
         // Accept both old (SMTP_SERVER / SMTP_PASSWORD) and new naming
