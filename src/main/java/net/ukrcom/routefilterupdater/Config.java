@@ -91,11 +91,20 @@ public class Config {
         debug = Boolean.parseBoolean(p.getProperty("DEBUG", "false"));
     }
 
-    /** Returns the router host for the given address family.
+    /**
+     * Returns the SSH management host for the given address family.
+     * For IPv6 mode: uses ROUTER_IP_IPV6 if set, otherwise falls back to ROUTER_IP.
+     * Rationale: the router's BGP group may carry IPv6 peers while SSH management
+     * is reachable only via IPv4.
+     *
      * @param ipv6
-     * @return  */
+     * @return
+     */
     public String routerIp(boolean ipv6) {
-        return ipv6 ? routerIpV6 : routerIp;
+        if (ipv6 && !routerIpV6.isBlank()) {
+            return routerIpV6;
+        }
+        return routerIp;
     }
 
     /** Returns the BGP group name for the given address family.

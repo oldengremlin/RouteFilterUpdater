@@ -9,11 +9,15 @@
         </filter>
     </appender>
 
-    <!-- Аппендер для основного лог-файлу -->
+    <!--
+        Аппендер для основного лог-файлу.
+        LOG_DIR може бути задано через -DLOG_DIR=/var/log/routefilterupdater
+        або змінну середовища LOG_DIR. За замовчуванням — "logs" поряд із JAR.
+    -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>logs/routefilterupdater.log</file>
+        <file>${LOG_DIR:-logs}/routefilterupdater.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
-            <fileNamePattern>logs/routefilterupdater.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <fileNamePattern>${LOG_DIR:-logs}/routefilterupdater.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
             <maxFileSize>10MB</maxFileSize>
             <maxHistory>30</maxHistory>
             <totalSizeCap>1GB</totalSizeCap>
