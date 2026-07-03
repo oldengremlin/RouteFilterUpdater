@@ -139,7 +139,8 @@ java -jar RouteFilterUpdater-1.0-all.jar -6 -s -r -q
 3. Для кожної унікальної importPolicy:
      acceptSet = whoisMap[peerAs].ipv4Set  (або ipv6Set для -6)
      якщо acceptSet == ANY → пропустити (дозволяємо все, фільтр не потрібен)
-     bgpq4 -AJEl <importPolicy>/accept <acceptSet>  [-6]
+     termName  = "accept" (IPv4) або "accept_v6" (IPv6)
+     bgpq4 -AJEl <importPolicy>/<termName> <acceptSet>  [-6]
 
 4. Об'єднаний вивід → файл / stdout
 
@@ -149,12 +150,15 @@ java -jar RouteFilterUpdater-1.0-all.jar -6 -s -r -q
                → [вміст фільтрів] + Ctrl+D
                → show | compare | no-more
                → commit and-quit
+                   ├─ успіх → operational prompt → готово
+                   └─ помилка (error: ...) → rollback 0 → exit → виняток
 ```
 
 ## Формат виводу (bgpq4 -J -E)
 
 Готовий Junos-блок з `replace:` для `load merge terminal`:
 
+IPv4 (`-4`):
 ```
 policy-options {
  policy-statement Client_plf_SINHRON {
@@ -164,6 +168,21 @@ replace:
     route-filter 91.201.36.0/22 exact;
     route-filter 91.209.126.0/24 exact;
     route-filter 195.138.218.0/24 exact;
+   }
+  }
+ }
+}
+```
+
+IPv6 (`-6`) — термін `accept_v6`:
+```
+policy-options {
+ policy-statement Client_plf_CLOUD_NETS {
+  term accept_v6 {
+replace:
+   from {
+    route-filter 2001:470:177::/48 exact;
+    route-filter 2a09:2dc2::/32 exact;
    }
   }
  }
