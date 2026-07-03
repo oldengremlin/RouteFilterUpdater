@@ -1,0 +1,123 @@
+/*
+ * Copyright 2025 olden
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package net.ukrcom.routefilterupdater;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.*;
+
+/**
+ * Orchestrates filter generation:
+ *
+ * 1. Query WHOIS for SELF_AS → build peerAs → WhoisPolicy map (in-memory cache)
+ * 2. SSH to router → parse BGP group neighbors (ip, peerAs, importPolicy)
+ * 3. For each unique importPolicy:
+ *    a. Look up peer's accepted AS/AS-SET in WHOIS map
+ *    b. Skip if: no entry, family not configured, accept is ANY
+ *    c. Call bgpq4 -AJEl <importPolicy>/accept <acceptSet>
+ *    d. Append output to result
+ *
+ * Multiple neighbors sharing the same (peerAs, importPolicy) produce a single filter.
+ */
+public class FilterGenerator {
+
+    private static final Logger log = LoggerFactory.getLogger(FilterGenerator.class);
+
+    private final Config       config;
+    private final WhoisFetcher whoisFetcher;
+    private final Bgpq4Client  bgpq4;
+
+    public FilterGenerator(Config config) {
+        this.config       = config;
+        this.whoisFetcher = new WhoisFetcher(config.whoisServer);
+        this.bgpq4        = new Bgpq4Client(config.bgpq4Path, config.bgpq4Sources);
+    }
+
+    public String generate(boolean ipv6) throws Exception {
+        // Step 1: WHOIS lookup for SELF_AS
+        Map<Long, WhoisPolicy> policies = whoisFetcher.fetchSelfAsPolicies(config.selfAs);
+
+        // Step 2: get neighbors from router
+        String routerHost = config.routerIp(ipv6);
+        String bgpGroup   = config.bgpGroup(ipv6);
+
+        if (routerHost.isBlank()) {
+            throw new IllegalArgumentException(
+                    "ROUTER_IP" + (ipv6 ? "_IPV6" : "") + " not configured");
+        }
+        if (bgpGroup.isBlank()) {
+            throw new IllegalArgumentException(
+                    "BGP_GROUP_IP" + (ipv6 ? "V6" : "V4") + " not configured");
+        }
+
+        List<BgpNeighbor> neighbors;
+        try (RouterClient router = new RouterClient(routerHost, config.username, config.password)) {
+            router.connect();
+            neighbors = router.getNeighbors(bgpGroup, config.exceptRegex());
+        }
+
+        // Step 3: deduplicate by importPolicy; each unique policy gets one filter
+        // (multiple IPs may share the same peerAs + importPolicy)
+        Map<String, Long> policyToAs = new LinkedHashMap<>();
+        for (BgpNeighbor n : neighbors) {
+            policyToAs.putIfAbsent(n.getImportPolicy(), n.getPeerAs());
+        }
+
+        log.info("Generating {} unique filters ({})...", policyToAs.size(), ipv6 ? "IPv6" : "IPv4");
+        StringBuilder output  = new StringBuilder();
+        int generated = 0, skipped = 0;
+
+        for (var entry : policyToAs.entrySet()) {
+            String importPolicy = entry.getKey();
+            long   peerAs       = entry.getValue();
+
+            WhoisPolicy wp = policies.get(peerAs);
+            if (wp == null) {
+                log.warn("  SKIP  {} — AS{} has no WHOIS import entry", importPolicy, peerAs);
+                skipped++;
+                continue;
+            }
+
+            String acceptSet = wp.getAcceptSet(ipv6);
+            if (acceptSet == null) {
+                log.warn("  SKIP  {} — AS{} has no {} accept set in WHOIS",
+                        importPolicy, peerAs, ipv6 ? "IPv6" : "IPv4");
+                skipped++;
+                continue;
+            }
+            if (acceptSet.equalsIgnoreCase("ANY")) {
+                log.info("  SKIP  {} — AS{} accepts ANY (permit-all, no prefix filter needed)",
+                        importPolicy, peerAs);
+                skipped++;
+                continue;
+            }
+
+            log.info("  GEN   {} ← AS{} ← {}", importPolicy, peerAs, acceptSet);
+            String filter = bgpq4.generateFilter(importPolicy, "accept", acceptSet, ipv6);
+            if (!filter.isBlank()) {
+                output.append(filter).append("\n");
+                generated++;
+            } else {
+                log.warn("  EMPTY {} ← {} — bgpq4 returned no prefixes", importPolicy, acceptSet);
+                skipped++;
+            }
+        }
+
+        log.info("Done: {} filters generated, {} skipped", generated, skipped);
+        return output.toString();
+    }
+}
