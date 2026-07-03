@@ -1,30 +1,31 @@
 # RouteFilterUpdater
 
-RouteFilterUpdater — це утиліта на Java для автоматизації створення та застосування BGP-маршрутних фільтрів на маршрутизаторах Juniper. Вона отримує інформацію про BGP-сусідів, запитує бази IRR (Internet Routing Registry), генерує маршрутні фільтри на основі даних WHOIS і застосовує конфігурацію до маршрутизатора через SSH. Підтримує IPv4 та IPv6, включає логування та надсилання звітів про виконання електронною поштою.
+RouteFilterUpdater — утиліта на Java для автоматизації створення та застосування BGP-маршрутних фільтрів на маршрутизаторах Juniper. Зчитує конфігурацію BGP-сусідів з роутера через SSH, отримує дані про маршрути з IRR через WHOIS, генерує фільтри за допомогою **bgpq4** у форматі Junos і застосовує конфігурацію через `load merge terminal`. Підтримує IPv4 та IPv6, веде логування та надсилає звіти електронною поштою.
 
 ## Можливості
 
-- **Автоматизація маршрутних фільтрів**: Генерує BGP-фільтри на основі даних IRR і конфігурації BGP-сусідів.
-- **Підтримка маршрутизаторів Juniper**: Застосовує конфігурації через SSH і Junos CLI.
-- **Сумісність з IPv4 та IPv6**: Генерує фільтри для обох типів адрес.
-- **Інтеграція з IRR**: Виконує запити до WHOIS-серверів (наприклад, RADB) для отримання даних про піринг і експорт.
-- **Звіти про виконання**: Надсилає детальні звіти електронною поштою з інформацією про зміни конфігурації.
-- **Обробка помилок**: Включає повторні спроби для WHOIS-запитів і SSH-команд із детальним логуванням.
-- **Валідація конфігурації**: Перевіряє файли IRR і застосовує лише валідні префікси.
-- **Механізм блокування**: Запобігає одночасному запуску кількох екземплярів.
+- **bgpq4** як єдиний інструмент генерації фільтрів — виводить готовий Junos-формат з `replace:` маркерами.
+- **Один WHOIS-запит** на запуск — для SELF_AS, результат кешується в пам'яті; окремих запитів для кожного сусіда немає.
+- **Підтримка IPv4 та IPv6** — окремі BGP-групи й маршрутні фільтри для кожного сімейства адрес.
+- **Застосування через `load merge terminal`** — без покомандної відправки `delete/set`, конфігурація завантажується одним блоком.
+- **Механізм блокування** — запобігає одночасному запуску кількох екземплярів.
+- **Надсилання звітів** електронною поштою з результатами `show | compare`.
 
 ## Вимоги
 
-- **Java**: Java 8 або вище.
-- **Maven**: Для збирання проєкту.
-- **Маршрутизатор Juniper**: З увімкненим доступом через SSH.
-- **Доступ до WHOIS-сервера**: Наприклад, `whois.radb.net`.
-- **SMTP-сервер**: (Опціонально) Для надсилання звітів.
-- **Залежності**:
-  - JSch (для SSH)
-  - Apache Commons Net (для WHOIS)
-  - SLF4J з Logback (для логування)
-  - JavaMail (для надсилання звітів)
+- **Java 21** або вище.
+- **Maven** — для збирання проєкту.
+- **bgpq4** — встановлений та доступний за шляхом у `BGPQ4_PATH` ([github.com/bgp/bgpq4](https://github.com/bgp/bgpq4)).
+- **Маршрутизатор Juniper** з увімкненим SSH-доступом.
+- **WHOIS-сервер** (за замовчуванням `whois.ripe.net`).
+- **SMTP-сервер** — опціонально, для надсилання звітів.
+
+### Java-залежності (зшиваються у fat JAR автоматично)
+
+- JSch — SSH-клієнт
+- Apache Commons Net — WHOIS-клієнт
+- SLF4J + Logback — логування
+- JavaMail — надсилання звітів
 
 ## Встановлення
 
@@ -41,38 +42,59 @@ RouteFilterUpdater — це утиліта на Java для автоматиза
    mvn clean package
    ```
 
-   Це створить `target/RouteFilterUpdater-1.0-all.jar`.
+   Результат: `target/RouteFilterUpdater-1.0-all.jar`
 
-3. **Налаштування конфігурації**: Створіть файл `RouteFilterUpdater.properties` у корені проєкту з такими налаштуваннями:
+3. **Налаштування конфігурації**: Створіть `RouteFilterUpdater.properties` поряд із JAR-файлом:
 
    ```properties
-   ROUTER_IP=your-router-ip
-   USERNAME=your-username
-   PASSWORD=your-password
-   BGP_GROUP=Clients
-   SELF_AS=AS123456
-   IRR_CACHE_FILE=as123456_irr_objects.txt
-   EXCEPT_REGEX=Client_world_uaix_in,Client_PFTS_in,TE_IN
-   IRR_SOURCES=RADB,RIPE,APNIC,ARIN,LACNIC,AFRINIC
-   RTCONFIG_PATH=/usr/local/bin/rtconfig
+   # --- Роутер ---
+   ROUTER_IP=94.125.120.65
+   ROUTER_IP_IPV6=2a04:42c0::1
+
+   # --- SSH ---
+   USERNAME=noc
+   # PASSWORD=... або задайте змінну середовища ROUTER_PASSWORD
+
+   # --- BGP ---
+   SELF_AS=AS12593
+   BGP_GROUP_IPV4=Clients
+   BGP_GROUP_IPV6=Clients6
+
+   # Регулярні вирази (через кому) для виключення певних import-policy зі списку сусідів
+   EXCEPT_REGEX=Client_world_uaix_in,Client_PFTS_in,TE_IN,RPKI-MARK
+
+   # --- bgpq4 ---
+   BGPQ4_PATH=/usr/local/bin/bgpq4
+   # Список IRR-баз для bgpq4 -S (опціонально)
+   BGPQ4_SOURCES=RADB,RIPE,APNIC,ARIN
+
+   # --- WHOIS (для запиту SELF_AS) ---
    WHOIS_SERVER=whois.radb.net
-   WHOIS_OPTIONS=-r
-   SMTP_SERVER=your-smtp-server
-   SMTP_PORT=25
+
+   # --- Email-звіти (опціонально) ---
+   SMTP_HOST=your-smtp-server
+   SMTP_PORT=587
    SMTP_USER=your-smtp-user
-   SMTP_PASSWORD=your-smtp-password
-   REPORT_TO=recipient@example.com
-   REPORT_FROM=sender@example.com
+   SMTP_PASS=your-smtp-password
+   REPORT_FROM=noc@example.com
+   REPORT_TO=admin@example.com
+
    DEBUG=false
    ```
 
-   Альтернативно, задайте `ROUTER_PASSWORD` як змінну середовища, щоб не зберігати пароль у файлі.
+   > **Безпека**: задайте пароль через змінну середовища `ROUTER_PASSWORD`, а не в properties-файлі.
 
-4. **Встановлення rtconfig**: Переконайтеся, що утиліта `rtconfig` встановлена та доступна за шляхом, указаним у `RTCONFIG_PATH`.
+4. **Встановлення bgpq4**:
+
+   ```bash
+   # Debian/Ubuntu
+   apt install bgpq4
+
+   # або з вихідників
+   git clone https://github.com/bgp/bgpq4.git && cd bgpq4 && ./configure && make install
+   ```
 
 ## Використання
-
-Запустіть утиліту командою:
 
 ```bash
 java -jar target/RouteFilterUpdater-1.0-all.jar [опції]
@@ -80,58 +102,107 @@ java -jar target/RouteFilterUpdater-1.0-all.jar [опції]
 
 ### Опції
 
-- `-4`: Генерувати фільтри для IPv4 (за замовчуванням).
-- `-6`: Генерувати фільтри для IPv6.
-- `-o <файл>`: Зберегти фільтри у вказаний файл.
-- `-d, --debug`: Увімкнути детальне логування.
-- `-s, --save`: Застосувати згенеровану конфігурацію до маршрутизатора.
-- `-r, --report`: Надіслати звіт про виконання на адресу, указану в `REPORT_TO`.
-- `-q, --quiet`: Придушити вивід у консоль (зручно для cron).
-- `-?, -h, --help`: Показати довідку.
+| Опція | Опис |
+|---|---|
+| `-4` | Генерувати фільтри для IPv4 (за замовчуванням) |
+| `-6` | Генерувати фільтри для IPv6 |
+| `-o <файл>` | Зберегти фільтри у файл (без `-o` та `-s` — вивід у stdout) |
+| `-s, --save` | Застосувати конфігурацію до роутера через SSH |
+| `-r, --report` | Надіслати звіт на `REPORT_TO` |
+| `-d, --debug` | Детальне логування |
+| `-q, --quiet` | Без виводу в консоль (для cron) |
+| `-h, --help` | Показати довідку |
 
-### Приклад
-
-Генерація фільтрів IPv4, збереження у файл, застосування до маршрутизатора та надсилання звіту:
+### Приклади
 
 ```bash
-java -jar target/RouteFilterUpdater-1.0-all.jar -o ukrcom-gw-route-filter-updater.txt -s -r -d
+# Переглянути згенеровані IPv4-фільтри без застосування
+java -jar RouteFilterUpdater-1.0-all.jar -4
+
+# Зберегти IPv4-фільтри у файл, застосувати та надіслати звіт
+java -jar RouteFilterUpdater-1.0-all.jar -4 -o filters-v4.txt -s -r
+
+# IPv6-фільтри у тихому режимі (для cron)
+java -jar RouteFilterUpdater-1.0-all.jar -6 -s -r -q
 ```
 
-## Формат конфігураційного файлу
-
-Вихідний файл (наприклад, `ukrcom-gw-route-filter-updater.txt`) містить команди конфігурації Junos, наприклад:
+## Як це працює
 
 ```
-delete policy-options policy-statement Client_plf_OPERATOR_RINKA_NEW_AS term accept from
-set policy-options policy-statement Client_plf_OPERATOR_RINKA_NEW_AS term accept from route-filter 94.45.144.0/24 exact accept
+1. WHOIS(SELF_AS) → Map<peerAs → {ipv4Set, ipv6Set}>   # один запит, in-memory кеш
+
+2. SSH → show configuration protocols bgp group <GROUP>
+         | display set | match "(import|peer-as)"
+         | except "<EXCEPT_REGEX>"
+   → List<BgpNeighbor(ip, peerAs, importPolicy)>
+
+3. Для кожної унікальної importPolicy:
+     acceptSet = whoisMap[peerAs].ipv4Set  (або ipv6Set для -6)
+     якщо acceptSet == ANY → пропустити (дозволяємо все, фільтр не потрібен)
+     bgpq4 -AJEl <importPolicy>/accept <acceptSet>  [-6]
+
+4. Об'єднаний вивід → файл / stdout
+
+5. Якщо -s:
+     SSH shell → configure private
+               → load merge terminal
+               → [вміст фільтрів] + Ctrl+D
+               → show | compare | no-more
+               → commit and-quit
 ```
 
-Коментарі, що починаються з `#`, ігноруються під час застосування.
+## Формат виводу (bgpq4 -J -E)
+
+Готовий Junos-блок з `replace:` для `load merge terminal`:
+
+```
+policy-options {
+ policy-statement Client_plf_SINHRON {
+  term accept {
+replace:
+   from {
+    route-filter 91.201.36.0/22 exact;
+    route-filter 91.209.126.0/24 exact;
+    route-filter 195.138.218.0/24 exact;
+   }
+  }
+ }
+}
+```
+
+## Структура коду
+
+```
+src/main/java/net/ukrcom/routefilterupdater/
+├── RouteFilterUpdater.java   — точка входу, оркестрація
+├── Args.java                 — розбір аргументів командного рядка
+├── Config.java               — завантаження RouteFilterUpdater.properties
+├── BgpNeighbor.java          — дата-клас: ip, peerAs, importPolicy
+├── WhoisPolicy.java          — дата-клас: ipv4Set / ipv6Set на peer AS
+├── SshClient.java            — JSch: exec-канал + PTY shell з waitForPrompt
+├── RouterClient.java         — Junos SSH: getNeighbors + applyFilters
+├── WhoisFetcher.java         — WHOIS-запит + парсинг mp-import/import рядків
+├── Bgpq4Client.java          — виклик bgpq4 як зовнішнього процесу
+├── FilterGenerator.java      — головна бізнес-логіка генерації фільтрів
+└── EmailReporter.java        — надсилання SMTP-звітів
+```
+
+## Міграція з попередньої версії (rtconfig)
+
+| Стара властивість | Нова властивість | Примітка |
+|---|---|---|
+| `RTCONFIG_PATH=...` | `BGPQ4_PATH=...` | Вказати шлях до bgpq4 |
+| `IRR_SOURCES=...` | `BGPQ4_SOURCES=...` | Стара назва також приймається |
+| `IRR_CACHE_FILE=...` | *(видалити)* | Файл кешу більше не використовується |
+| `WHOIS_OPTIONS=-r` | *(видалити)* | Хардкод у WhoisFetcher |
+| `SMTP_SERVER=...` | `SMTP_HOST=...` | Стара назва також приймається |
+| `SMTP_PASSWORD=...` | `SMTP_PASS=...` | Стара назва також приймається |
 
 ## Логування
 
-- Логи записуються у тимчасовий файл (`routefilterupdater-session-<UUID>.log`).
-- Режим дебагу (`-d`) забезпечує детальні логи для діагностики.
-- Старі логи (старші 7 днів) автоматично видаляються.
-
-## Звіти електронною поштою
-
-При використанні опції `-r` утиліта надсилає звіт на адресу, указану в `REPORT_TO`. Звіт містить:
-
-- Зміни конфігурації (вивід `show | compare`).
-- Статус виконання.
-
-Приклад звіту:
-
-```
-RouteFilterUpdater report:
-
-RouteFilterUpdater Configuration Changes:
-
-[edit]
--  # 2025-04-23T10:50:13+03:00
-+  # 2025-04-23T10:50:59+03:00
-```
+- Логи пишуться у `logs/routefilterupdater.log` (rolling, 10 МБ / 30 днів / 1 ГБ).
+- `-d` — debug-рівень для діагностики SSH і bgpq4.
+- `-q` — вимикає вивід у консоль (файловий лог продовжує писатись).
 
 ## Ліцензія
 
