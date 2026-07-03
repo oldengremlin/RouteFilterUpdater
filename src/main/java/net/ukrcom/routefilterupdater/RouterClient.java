@@ -18,6 +18,7 @@ package net.ukrcom.routefilterupdater;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.*;
@@ -152,8 +153,23 @@ public class RouterClient implements AutoCloseable {
             String compareOutput = ssh.waitForPrompt("config", 60_000);
 
             ssh.sendLine("commit and-quit");
-            ssh.waitForPrompt("operational", 120_000);
-            log.info("Committed successfully");
+            try {
+                ssh.waitForCommit(120_000);
+                log.info("Committed successfully");
+            } catch (IOException commitEx) {
+                log.error("Commit failed: {}", commitEx.getMessage());
+                // Router stayed in configure mode — roll back and exit cleanly
+                try {
+                    ssh.sendLine("rollback 0");
+                    ssh.waitForPrompt("config", 15_000);
+                    ssh.sendLine("exit");
+                    ssh.waitForPrompt("operational", 15_000);
+                    log.info("Rolled back and exited configure mode");
+                } catch (IOException recoveryEx) {
+                    log.warn("Recovery (rollback/exit) also failed: {}", recoveryEx.getMessage());
+                }
+                throw commitEx;
+            }
 
             return cleanOutput(compareOutput, username);
         } finally {

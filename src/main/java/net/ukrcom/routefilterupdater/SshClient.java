@@ -162,12 +162,78 @@ public class SshClient implements AutoCloseable {
      * Useful for non-prompt markers like "[Type ^D".
      * @param regex
      * @param timeoutMs
-     * @return 
+     * @return
      * @throws java.io.IOException
      */
     public String waitForString(String regex, int timeoutMs) throws IOException {
         Pattern target = Pattern.compile(regex, Pattern.DOTALL);
         return doWait(target, null, timeoutMs, regex);
+    }
+
+    /**
+     * After sending "commit and-quit", waits for one of two outcomes:
+     *   - operational prompt (&gt;) → commit succeeded, returns accumulated output
+     *   - config prompt (#) with "error:" in output → commit failed, throws IOException
+     *   - timeout → throws IOException
+     *
+     * Unlike waitForPrompt, no skipper is applied: we need to see the final prompt
+     * to determine which mode the router ended up in.
+     * @param timeoutMs
+     * @return accumulated output on success
+     * @throws java.io.IOException on commit failure or timeout
+     */
+    public String waitForCommit(int timeoutMs) throws IOException {
+        Pattern opPrompt  = Pattern.compile(
+                Pattern.quote(username) + "@[^>]+>\\s*$", Pattern.DOTALL);
+        Pattern cfgPrompt = Pattern.compile(
+                Pattern.quote(username) + "@[^#]+#\\s*$", Pattern.DOTALL);
+        Pattern errMarker = Pattern.compile("(?m)^error:");
+
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        StringBuilder acc = new StringBuilder();
+
+        while (System.currentTimeMillis() < deadline) {
+            String chunk = readAvailable();
+            if (!chunk.isEmpty()) {
+                chunk = chunk.replaceAll(ANSI_STRIP, "");
+                acc.append(chunk);
+                if (log.isDebugEnabled() && chunk.length() > 1) {
+                    String tail = chunk.length() > 120
+                            ? "…" + chunk.substring(chunk.length() - 120) : chunk;
+                    log.debug("← [{}]", tail.replace("\n", "↵").replace("\r", ""));
+                }
+                String s = acc.toString();
+                if (opPrompt.matcher(s).find()) {
+                    log.debug("Commit: operational prompt detected (success)");
+                    return s.trim();
+                }
+                if (cfgPrompt.matcher(s).find() && errMarker.matcher(s).find()) {
+                    String errDetails = extractCommitErrors(s);
+                    throw new IOException("Commit failed:\n" + errDetails);
+                }
+            } else {
+                sleep(10);
+            }
+        }
+
+        String tail = acc.length() > 500 ? "…" + acc.substring(acc.length() - 500) : acc.toString();
+        log.warn("Timeout ({} ms) waiting for commit result\nLast output: [{}]", timeoutMs, tail);
+        throw new IOException("Timeout waiting for commit result");
+    }
+
+    private String extractCommitErrors(String output) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : output.split("\n")) {
+            String clean = line.replaceAll(ANSI_STRIP, "").trim();
+            if (clean.isBlank()) continue;
+            // Skip Junos prompt lines (user@host> or user@host#)
+            if (username != null
+                    && clean.matches(Pattern.quote(username) + "@[^>#]+[>#].*")) continue;
+            // Skip mode indicators like {master}[edit]
+            if (clean.matches("\\{[^}]*\\}.*")) continue;
+            sb.append(clean).append("\n");
+        }
+        return sb.toString().trim();
     }
 
     // -------------------------------------------------------------------------
