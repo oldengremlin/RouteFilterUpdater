@@ -40,7 +40,7 @@
   </build>
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
-    <exec.mainClass>net.ukrcom.routefilterupdater.RouteFilterUpdater</exec.mainClass>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <exec.mainClass>net.ukrcom.routefilterupdater.RouteFilterUpdater</exec.mainClass>
   </properties>
 </project>
