@@ -47,7 +47,7 @@ public class FilterGenerator {
         this.bgpq4 = new Bgpq4Client(config.bgpq4Path, config.bgpq4Sources);
     }
 
-    public String generate(boolean ipv6) throws Exception {
+    public String generate(boolean ipv6, boolean strictRpsl) throws Exception {
         // Step 1: WHOIS lookup for SELF_AS
         Map<Long, WhoisPolicy> policies = whoisFetcher.fetchSelfAsPolicies(config.selfAs);
 
@@ -101,6 +101,13 @@ public class FilterGenerator {
             if (acceptSet.equalsIgnoreCase("ANY")) {
                 log.info("  SKIP  {} — AS{} accepts ANY (permit-all, no prefix filter needed)",
                         importPolicy, peerAs);
+                if (strictRpsl) {
+                    System.err.printf(
+                            "WARNING: AS%d import policy is accept ANY%n" +
+                            "No prefix filter generated for %s.%n" +
+                            "Verify whether this is intentional or an incomplete RPSL description.%n%n",
+                            peerAs, importPolicy);
+                }
                 skipped++;
                 continue;
             }

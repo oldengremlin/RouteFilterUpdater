@@ -23,6 +23,7 @@ public class Args {
     public boolean save = false;
     public boolean report = false;
     public boolean quiet = false;
+    public boolean strictRpsl = false;
     public boolean help = false;
 
     public Args(String[] argv) {
@@ -40,6 +41,8 @@ public class Args {
                     report = true;
                 case "-q", "--quiet" ->
                     quiet = true;
+                case "--strict-rpsl" ->
+                    strictRpsl = true;
                 case "-h", "-?", "--help" ->
                     help = true;
                 case "-o" -> {
@@ -65,6 +68,7 @@ public class Args {
               -r, --report    Send result to REPORT_TO email
               -d, --debug     Enable debug logging
               -q, --quiet     Suppress console output (for cron jobs)
+              --strict-rpsl   Warn on stderr when a peer's RPSL policy is 'accept ANY'
               -h, --help      Show this help
             """);
     }
