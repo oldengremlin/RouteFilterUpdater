@@ -106,7 +106,8 @@ public class FilterGenerator {
             }
 
             log.info("  GEN   {} ← AS{} ← {}", importPolicy, peerAs, acceptSet);
-            String filter = bgpq4.generateFilter(importPolicy, "accept", acceptSet, ipv6);
+            String termName = ipv6 ? "accept_v6" : "accept";
+            String filter = bgpq4.generateFilter(importPolicy, termName, acceptSet, ipv6);
             if (!filter.isBlank()) {
                 output.append(filter).append("\n");
                 generated++;
