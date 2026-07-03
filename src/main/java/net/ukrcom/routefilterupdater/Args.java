@@ -28,17 +28,27 @@ public class Args {
     public Args(String[] argv) {
         for (int i = 0; i < argv.length; i++) {
             switch (argv[i]) {
-                case "-4"                  -> ipv6 = false;
-                case "-6"                  -> ipv6 = true;
-                case "-d", "--debug"       -> debug = true;
-                case "-s", "--save"        -> save = true;
-                case "-r", "--report"      -> report = true;
-                case "-q", "--quiet"       -> quiet = true;
-                case "-h", "-?", "--help"  -> help = true;
+                case "-4" ->
+                    ipv6 = false;
+                case "-6" ->
+                    ipv6 = true;
+                case "-d", "--debug" ->
+                    debug = true;
+                case "-s", "--save" ->
+                    save = true;
+                case "-r", "--report" ->
+                    report = true;
+                case "-q", "--quiet" ->
+                    quiet = true;
+                case "-h", "-?", "--help" ->
+                    help = true;
                 case "-o" -> {
-                    if (i + 1 < argv.length) outputFile = argv[++i];
+                    if (i + 1 < argv.length) {
+                        outputFile = argv[++i];
+                    }
                 }
-                default -> { /* ignore unknown */ }
+                default -> {
+                    /* ignore unknown */ }
             }
         }
     }

@@ -35,8 +35,8 @@ public class RouterClient implements AutoCloseable {
     private final String password;
 
     public RouterClient(String host, String username, String password) {
-        this.ssh      = new SshClient();
-        this.host     = host;
+        this.ssh = new SshClient();
+        this.host = host;
         this.username = username;
         this.password = password;
     }
@@ -48,13 +48,16 @@ public class RouterClient implements AutoCloseable {
     // -------------------------------------------------------------------------
     // Read neighbors
     // -------------------------------------------------------------------------
-
     /**
      * Fetches BGP neighbor list from the router with a single SSH exec command:
      *   show configuration protocols bgp group <GROUP>
      *     | display set | match "(import|peer-as)" | except "<EXCEPT_REGEX>"
      *
      * Returns deduplicated BgpNeighbor list (one entry per neighbor IP).
+     * @param bgpGroup
+     * @param exceptRegex
+     * @return 
+     * @throws java.lang.Exception
      */
     public List<BgpNeighbor> getNeighbors(String bgpGroup, String exceptRegex) throws Exception {
         String cmd = buildNeighborCommand(bgpGroup, exceptRegex);
@@ -80,7 +83,7 @@ public class RouterClient implements AutoCloseable {
                 "set protocols bgp group \\S+ neighbor (\\S+) peer-as (\\d+)");
 
         Map<String, String> importMap = new LinkedHashMap<>();
-        Map<String, Long>   peerAsMap = new LinkedHashMap<>();
+        Map<String, Long> peerAsMap = new LinkedHashMap<>();
 
         for (String line : output.split("\n")) {
             line = line.trim();
@@ -91,15 +94,15 @@ public class RouterClient implements AutoCloseable {
             }
             m = peerAsPat.matcher(line);
             if (m.find()) {
-                peerAsMap.putIfAbsent(m.group(1), Long.parseLong(m.group(2)));
+                peerAsMap.putIfAbsent(m.group(1), Long.valueOf(m.group(2)));
             }
         }
 
         List<BgpNeighbor> neighbors = new ArrayList<>();
         for (var entry : importMap.entrySet()) {
-            String ip     = entry.getKey();
+            String ip = entry.getKey();
             String policy = entry.getValue();
-            Long   peerAs = peerAsMap.get(ip);
+            Long peerAs = peerAsMap.get(ip);
             if (peerAs == null) {
                 log.warn("No peer-as for {} (import {}), skipping", ip, policy);
                 continue;
@@ -114,12 +117,14 @@ public class RouterClient implements AutoCloseable {
     // -------------------------------------------------------------------------
     // Apply configuration
     // -------------------------------------------------------------------------
-
     /**
      * Applies Junos-format filter configuration (bgpq4 -J output) to the router using:
      *   configure private → load merge terminal → [paste] → show | compare → commit and-quit
      *
      * Returns the cleaned "show | compare" output.
+     * @param filtersContent
+     * @return 
+     * @throws java.lang.Exception
      */
     public String applyFilters(String filtersContent) throws Exception {
         log.info("Opening shell to apply configuration on {}", host);

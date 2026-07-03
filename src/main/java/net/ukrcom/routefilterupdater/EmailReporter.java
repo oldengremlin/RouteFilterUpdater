@@ -46,7 +46,9 @@ public class EmailReporter {
 
         boolean local = "127.0.0.1".equals(config.smtpHost) || "localhost".equals(config.smtpHost);
         props.put("mail.smtp.starttls.enable", String.valueOf(!local));
-        if (!local) props.put("mail.smtp.ssl.trust", "*");
+        if (!local) {
+            props.put("mail.smtp.ssl.trust", "*");
+        }
 
         Session session;
         if (!config.smtpUser.isBlank()) {

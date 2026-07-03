@@ -48,7 +48,7 @@ public class Bgpq4Client {
 
     public Bgpq4Client(String bgpq4Path, String sources) {
         this.bgpq4Path = bgpq4Path;
-        this.sources   = sources;
+        this.sources = sources;
     }
 
     /** Returns true if the bgpq4 binary exists and is executable. */
@@ -65,6 +65,8 @@ public class Bgpq4Client {
      * @param asSet       AS number or AS-SET    (e.g. "AS-SYNCHRON" or "AS42545")
      * @param ipv6        true for IPv6 (-6 flag)
      * @return Junos config block ready for "load merge terminal", or empty string if no prefixes
+     * @throws java.io.IOException
+     * @throws java.lang.InterruptedException
      */
     public String generateFilter(String policyName, String termName,
                                  String asSet, boolean ipv6)
@@ -110,7 +112,9 @@ public class Bgpq4Client {
         cmd.add("-A");  // aggregate
         cmd.add("-J");  // JunOS format
         cmd.add("-E");  // replace: marker
-        if (ipv6) cmd.add("-6");
+        if (ipv6) {
+            cmd.add("-6");
+        }
         if (sources != null && !sources.isBlank()) {
             cmd.add("-S");
             cmd.add(sources);

@@ -37,14 +37,14 @@ public class FilterGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(FilterGenerator.class);
 
-    private final Config       config;
+    private final Config config;
     private final WhoisFetcher whoisFetcher;
-    private final Bgpq4Client  bgpq4;
+    private final Bgpq4Client bgpq4;
 
     public FilterGenerator(Config config) {
-        this.config       = config;
+        this.config = config;
         this.whoisFetcher = new WhoisFetcher(config.whoisServer);
-        this.bgpq4        = new Bgpq4Client(config.bgpq4Path, config.bgpq4Sources);
+        this.bgpq4 = new Bgpq4Client(config.bgpq4Path, config.bgpq4Sources);
     }
 
     public String generate(boolean ipv6) throws Exception {
@@ -53,7 +53,7 @@ public class FilterGenerator {
 
         // Step 2: get neighbors from router
         String routerHost = config.routerIp(ipv6);
-        String bgpGroup   = config.bgpGroup(ipv6);
+        String bgpGroup = config.bgpGroup(ipv6);
 
         if (routerHost.isBlank()) {
             throw new IllegalArgumentException(
@@ -78,12 +78,12 @@ public class FilterGenerator {
         }
 
         log.info("Generating {} unique filters ({})...", policyToAs.size(), ipv6 ? "IPv6" : "IPv4");
-        StringBuilder output  = new StringBuilder();
+        StringBuilder output = new StringBuilder();
         int generated = 0, skipped = 0;
 
         for (var entry : policyToAs.entrySet()) {
             String importPolicy = entry.getKey();
-            long   peerAs       = entry.getValue();
+            long peerAs = entry.getValue();
 
             WhoisPolicy wp = policies.get(peerAs);
             if (wp == null) {

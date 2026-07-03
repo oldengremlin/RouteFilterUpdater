@@ -29,15 +29,29 @@ public class WhoisPolicy {
         this.peerAs = peerAs;
     }
 
-    public long getPeerAs() { return peerAs; }
+    public long getPeerAs() {
+        return peerAs;
+    }
 
-    public String getIpv4Set() { return ipv4Set; }
-    public String getIpv6Set() { return ipv6Set; }
+    public String getIpv4Set() {
+        return ipv4Set;
+    }
 
-    void setIpv4Set(String s) { this.ipv4Set = s; }
-    void setIpv6Set(String s) { this.ipv6Set = s; }
+    public String getIpv6Set() {
+        return ipv6Set;
+    }
 
-    /** Returns the accept set appropriate for the given address family. */
+    void setIpv4Set(String s) {
+        this.ipv4Set = s;
+    }
+
+    void setIpv6Set(String s) {
+        this.ipv6Set = s;
+    }
+
+    /** Returns the accept set appropriate for the given address family.
+     * @param ipv6
+     * @return  */
     public String getAcceptSet(boolean ipv6) {
         return ipv6 ? ipv6Set : ipv4Set;
     }

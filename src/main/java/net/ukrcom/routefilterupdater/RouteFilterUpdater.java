@@ -46,8 +46,8 @@ public class RouteFilterUpdater {
     private static final Logger log = LoggerFactory.getLogger(RouteFilterUpdater.class);
 
     private static final String PROPERTIES_FILE = "RouteFilterUpdater.properties";
-    private static final String LOCK_FILE =
-            System.getProperty("java.io.tmpdir") + File.separator + "RouteFilterUpdater.lock";
+    private static final String LOCK_FILE
+            = System.getProperty("java.io.tmpdir") + File.separator + "RouteFilterUpdater.lock";
 
     public static void main(String[] argv) {
         File lock = new File(LOCK_FILE);
@@ -79,12 +79,11 @@ public class RouteFilterUpdater {
     }
 
     // -------------------------------------------------------------------------
-
     private static void run(Args args) throws Exception {
         Config config = new Config(PROPERTIES_FILE);
         configureLogging(args, config);
 
-        String ts    = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
         String proto = args.ipv6 ? "IPv6" : "IPv4";
         log.info("=== RouteFilterUpdater  {}  {} ===", proto, ts);
 
@@ -137,10 +136,9 @@ public class RouteFilterUpdater {
     }
 
     // -------------------------------------------------------------------------
-
     private static void configureLogging(Args args, Config config) {
-        ch.qos.logback.classic.Logger root =
-                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+        ch.qos.logback.classic.Logger root
+                = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
 
         if (args.quiet) {
             setConsoleLevel(root, "OFF");
@@ -153,11 +151,11 @@ public class RouteFilterUpdater {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static void setConsoleLevel(ch.qos.logback.classic.Logger root, String level) {
         Appender<?> console = root.getAppender("CONSOLE");
-        if (console instanceof ConsoleAppender) {
+        if (console instanceof ConsoleAppender consoleAppender) {
             ThresholdFilter f = new ThresholdFilter();
             f.setLevel(level);
             f.start();
-            ConsoleAppender ca = (ConsoleAppender) console;
+            ConsoleAppender ca = consoleAppender;
             ca.clearAllFilters();
             ca.addFilter(f);
         }

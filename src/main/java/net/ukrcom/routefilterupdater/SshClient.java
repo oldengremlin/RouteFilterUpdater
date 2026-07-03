@@ -34,23 +34,22 @@ public class SshClient implements AutoCloseable {
     private static final int CONNECT_TIMEOUT_MS = 10_000;
 
     // Strips ANSI escape sequences and non-printable control characters from terminal output
-    private static final String ANSI_STRIP =
-            "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]|[\\x1B]\\[[0-9;]*[a-zA-Z]";
+    private static final String ANSI_STRIP
+            = "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]|[\\x1B]\\[[0-9;]*[a-zA-Z]";
 
     private Session session;
     private String username;
 
     // Shell channel state
     private ChannelShell shellChannel;
-    private InputStream  shellIn;
+    private InputStream shellIn;
     private BufferedReader shellReader;
-    private OutputStream   shellRawOut;
+    private OutputStream shellRawOut;
     private BufferedWriter shellWriter;
 
     // -------------------------------------------------------------------------
     // Session management
     // -------------------------------------------------------------------------
-
     public void connect(String host, String username, String password) throws JSchException {
         this.username = username;
         JSch jsch = new JSch();
@@ -67,7 +66,6 @@ public class SshClient implements AutoCloseable {
     // -------------------------------------------------------------------------
     // Exec channel (single command, returns stdout)
     // -------------------------------------------------------------------------
-
     public String executeCommand(String command, int timeoutSeconds) throws JSchException, IOException {
         ChannelExec ch = (ChannelExec) session.openChannel("exec");
         ch.setCommand(command);
@@ -81,7 +79,9 @@ public class SshClient implements AutoCloseable {
             while (System.currentTimeMillis() < deadline) {
                 if (in.available() > 0) {
                     int n = in.read(buf);
-                    if (n > 0) sb.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+                    if (n > 0) {
+                        sb.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+                    }
                 } else if (ch.isClosed()) {
                     break;
                 } else {
@@ -91,7 +91,9 @@ public class SshClient implements AutoCloseable {
             // drain
             while (in.available() > 0) {
                 int n = in.read(buf);
-                if (n > 0) sb.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+                if (n > 0) {
+                    sb.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+                }
             }
             return sb.toString();
         } finally {
@@ -102,30 +104,33 @@ public class SshClient implements AutoCloseable {
     // -------------------------------------------------------------------------
     // Shell channel (PTY / interactive)
     // -------------------------------------------------------------------------
-
     public void openShell() throws JSchException, IOException {
         shellChannel = (ChannelShell) session.openChannel("shell");
         shellChannel.setPty(true);
         shellChannel.setPtyType("vt100");
         shellChannel.setPtySize(200, 50, 0, 0);
 
-        shellIn      = shellChannel.getInputStream();
-        shellReader  = new BufferedReader(new InputStreamReader(shellIn, StandardCharsets.UTF_8));
-        shellRawOut  = shellChannel.getOutputStream();
-        shellWriter  = new BufferedWriter(new OutputStreamWriter(shellRawOut, StandardCharsets.UTF_8));
+        shellIn = shellChannel.getInputStream();
+        shellReader = new BufferedReader(new InputStreamReader(shellIn, StandardCharsets.UTF_8));
+        shellRawOut = shellChannel.getOutputStream();
+        shellWriter = new BufferedWriter(new OutputStreamWriter(shellRawOut, StandardCharsets.UTF_8));
 
         shellChannel.connect(3_000);
         log.debug("Shell channel opened (PTY vt100 200x50)");
     }
 
-    /** Send a line terminated with CR+LF (Junos expects \r\n). */
+    /** Send a line terminated with CR+LF (Junos expects \r\n).
+     * @param command
+     * @throws java.io.IOException */
     public void sendLine(String command) throws IOException {
         log.debug("→ {}", command.trim());
         shellWriter.write(command + "\r\n");
         shellWriter.flush();
     }
 
-    /** Send raw bytes (e.g. Ctrl+D = 0x04, or large binary content). */
+    /** Send raw bytes (e.g. Ctrl+D = 0x04, or large binary content).
+     * @param data
+     * @throws java.io.IOException */
     public void sendRaw(byte[] data) throws IOException {
         shellRawOut.write(data);
         shellRawOut.flush();
@@ -135,12 +140,16 @@ public class SshClient implements AutoCloseable {
      * Wait for a Junos mode prompt using the configured username:
      *   "operational" → user@host>
      *   "config"      → user@host#
+     * @param mode
+     * @param timeoutMs
+     * @return 
+     * @throws java.io.IOException
      */
     public String waitForPrompt(String mode, int timeoutMs) throws IOException {
         String promptRe = "config".equals(mode)
-                ? Pattern.quote(username) + "@[^#]+#\\s*"
-                : Pattern.quote(username) + "@[^>]+>\\s*";
-        Pattern target  = Pattern.compile("(?s)" + promptRe + "$", Pattern.DOTALL);
+                          ? Pattern.quote(username) + "@[^#]+#\\s*"
+                          : Pattern.quote(username) + "@[^>]+>\\s*";
+        Pattern target = Pattern.compile("(?s)" + promptRe + "$", Pattern.DOTALL);
         // Skip intermediate prompts that appear mid-output (e.g. inside paged output)
         Pattern skipper = Pattern.compile(
                 "(?s)^.*?" + Pattern.quote(username) + "@[^>#]+[>#](?![\\s\\r\\n]*$)",
@@ -151,6 +160,10 @@ public class SshClient implements AutoCloseable {
     /**
      * Wait until the accumulated output matches an arbitrary regex.
      * Useful for non-prompt markers like "[Type ^D".
+     * @param regex
+     * @param timeoutMs
+     * @return 
+     * @throws java.io.IOException
      */
     public String waitForString(String regex, int timeoutMs) throws IOException {
         Pattern target = Pattern.compile(regex, Pattern.DOTALL);
@@ -160,7 +173,6 @@ public class SshClient implements AutoCloseable {
     // -------------------------------------------------------------------------
     // Internal
     // -------------------------------------------------------------------------
-
     private String doWait(Pattern target, Pattern skipper, int timeoutMs, String label)
             throws IOException {
         long deadline = System.currentTimeMillis() + timeoutMs;
@@ -172,7 +184,9 @@ public class SshClient implements AutoCloseable {
                 chunk = chunk.replaceAll(ANSI_STRIP, "");
                 if (skipper != null) {
                     Matcher m = skipper.matcher(chunk);
-                    if (m.find()) chunk = m.replaceAll("");
+                    if (m.find()) {
+                        chunk = m.replaceAll("");
+                    }
                 }
                 acc.append(chunk);
                 if (log.isDebugEnabled() && chunk.length() > 1) {
@@ -225,6 +239,10 @@ public class SshClient implements AutoCloseable {
     }
 
     private static void sleep(long ms) {
-        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

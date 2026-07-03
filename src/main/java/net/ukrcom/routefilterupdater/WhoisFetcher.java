@@ -38,7 +38,7 @@ import java.util.regex.*;
 public class WhoisFetcher {
 
     private static final Logger log = LoggerFactory.getLogger(WhoisFetcher.class);
-    private static final int TIMEOUT_MS  = 10_000;
+    private static final int TIMEOUT_MS = 10_000;
     private static final int MAX_RETRIES = 3;
 
     private static final Pattern MP_IMPORT = Pattern.compile(
@@ -58,6 +58,9 @@ public class WhoisFetcher {
     /**
      * Queries WHOIS for {@code selfAs} and returns a map of peerAs → WhoisPolicy.
      * The result is cached in-memory for the lifetime of this run.
+     * @param selfAs
+     * @return 
+     * @throws java.io.IOException
      */
     public Map<Long, WhoisPolicy> fetchSelfAsPolicies(long selfAs) throws IOException {
         log.info("Querying WHOIS ({}) for AS{}", server, selfAs);
@@ -82,25 +85,36 @@ public class WhoisFetcher {
     private void parseImportLine(String line, Map<Long, WhoisPolicy> out) {
         Matcher m = MP_IMPORT.matcher(line);
         if (m.find()) {
-            boolean v6    = "ipv6".equalsIgnoreCase(m.group(1));
-            long peerAs   = Long.parseLong(m.group(2));
+            boolean v6 = "ipv6".equalsIgnoreCase(m.group(1));
+            long peerAs = Long.parseLong(m.group(2));
             String accept = extractAcceptSet(m.group(3));
-            if (accept != null) applyToPolicy(out, peerAs, accept, v6);
+            if (accept != null) {
+                applyToPolicy(out, peerAs, accept, v6);
+            }
             return;
         }
         m = PLAIN_IMPORT.matcher(line);
         if (m.find()) {
-            long peerAs   = Long.parseLong(m.group(1));
+            long peerAs = Long.parseLong(m.group(1));
             String accept = extractAcceptSet(m.group(2));
-            if (accept != null) applyToPolicy(out, peerAs, accept, false);
+            if (accept != null) {
+                applyToPolicy(out, peerAs, accept, false);
+            }
         }
     }
 
     private static void applyToPolicy(Map<Long, WhoisPolicy> map,
                                       long peerAs, String acceptSet, boolean v6) {
         WhoisPolicy pol = map.computeIfAbsent(peerAs, WhoisPolicy::new);
-        if (v6) { if (pol.getIpv6Set() == null) pol.setIpv6Set(acceptSet); }
-        else    { if (pol.getIpv4Set() == null) pol.setIpv4Set(acceptSet); }
+        if (v6) {
+            if (pol.getIpv6Set() == null) {
+                pol.setIpv6Set(acceptSet);
+            }
+        } else {
+            if (pol.getIpv4Set() == null) {
+                pol.setIpv4Set(acceptSet);
+            }
+        }
     }
 
     /**
@@ -117,14 +131,17 @@ public class WhoisFetcher {
      */
     static String extractAcceptSet(String clause) {
         for (String token : clause.trim().split("\\s+")) {
-            if (token.equalsIgnoreCase("ANY")) return "ANY";
-            if (token.matches("(?i)AS[\\w:-]+"))  return token;
+            if (token.equalsIgnoreCase("ANY")) {
+                return "ANY";
+            }
+            if (token.matches("(?i)AS[\\w:-]+")) {
+                return token;
+            }
         }
         return null;
     }
 
     // -------------------------------------------------------------------------
-
     private String queryWithRetry(String query) throws IOException {
         IOException last = null;
         for (int i = 1; i <= MAX_RETRIES; i++) {
@@ -133,7 +150,9 @@ public class WhoisFetcher {
             } catch (IOException e) {
                 last = e;
                 log.warn("WHOIS attempt {}/{} failed: {}", i, MAX_RETRIES, e.getMessage());
-                if (i < MAX_RETRIES) sleep(1_000L * i);
+                if (i < MAX_RETRIES) {
+                    sleep(1_000L * i);
+                }
             }
         }
         throw last;
@@ -146,11 +165,18 @@ public class WhoisFetcher {
         try {
             return client.query(query);
         } finally {
-            try { client.disconnect(); } catch (IOException ignored) {}
+            try {
+                client.disconnect();
+            } catch (IOException ignored) {
+            }
         }
     }
 
     private static void sleep(long ms) {
-        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

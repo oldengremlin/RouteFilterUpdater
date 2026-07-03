@@ -62,41 +62,45 @@ public class Config {
             p.load(is);
         }
 
-        routerIp    = require(p, "ROUTER_IP");
-        routerIpV6  = p.getProperty("ROUTER_IP_IPV6", "");
-        username    = require(p, "USERNAME");
+        routerIp = require(p, "ROUTER_IP");
+        routerIpV6 = p.getProperty("ROUTER_IP_IPV6", "");
+        username = require(p, "USERNAME");
 
         String envPass = System.getenv("ROUTER_PASSWORD");
         password = (envPass != null && !envPass.isBlank()) ? envPass : require(p, "PASSWORD");
 
         bgpGroupV4 = require(p, "BGP_GROUP_IPV4");
         bgpGroupV6 = p.getProperty("BGP_GROUP_IPV6", "");
-        selfAs     = parseSelfAs(require(p, "SELF_AS"));
+        selfAs = parseSelfAs(require(p, "SELF_AS"));
 
         String except = p.getProperty("EXCEPT_REGEX", "");
         exceptPatterns = except.isBlank() ? new String[0] : except.split(",\\s*");
 
-        bgpq4Path    = require(p, "BGPQ4_PATH");
+        bgpq4Path = require(p, "BGPQ4_PATH");
         // Accept legacy IRR_SOURCES as fallback
         bgpq4Sources = p.getProperty("BGPQ4_SOURCES", p.getProperty("IRR_SOURCES", ""));
-        whoisServer  = p.getProperty("WHOIS_SERVER", "whois.ripe.net");
+        whoisServer = p.getProperty("WHOIS_SERVER", "whois.ripe.net");
 
         // Accept both old (SMTP_SERVER / SMTP_PASSWORD) and new naming
         smtpHost = p.getProperty("SMTP_HOST", p.getProperty("SMTP_SERVER", ""));
         smtpPort = Integer.parseInt(p.getProperty("SMTP_PORT", "25"));
         smtpUser = p.getProperty("SMTP_USER", "");
         smtpPass = p.getProperty("SMTP_PASS", p.getProperty("SMTP_PASSWORD", ""));
-        reportTo   = p.getProperty("REPORT_TO", "");
+        reportTo = p.getProperty("REPORT_TO", "");
         reportFrom = p.getProperty("REPORT_FROM", "");
-        debug      = Boolean.parseBoolean(p.getProperty("DEBUG", "false"));
+        debug = Boolean.parseBoolean(p.getProperty("DEBUG", "false"));
     }
 
-    /** Returns the router host for the given address family. */
+    /** Returns the router host for the given address family.
+     * @param ipv6
+     * @return  */
     public String routerIp(boolean ipv6) {
         return ipv6 ? routerIpV6 : routerIp;
     }
 
-    /** Returns the BGP group name for the given address family. */
+    /** Returns the BGP group name for the given address family.
+     * @param ipv6
+     * @return  */
     public String bgpGroup(boolean ipv6) {
         return ipv6 ? bgpGroupV6 : bgpGroupV4;
     }
@@ -104,9 +108,12 @@ public class Config {
     /**
      * Builds a combined regex from EXCEPT_REGEX entries for use in Junos pipe filters,
      * e.g. "(Client_world_uaix_in|Client_PFTS_in|TE_IN)". Returns null if empty.
+     * @return 
      */
     public String exceptRegex() {
-        if (exceptPatterns.length == 0) return null;
+        if (exceptPatterns.length == 0) {
+            return null;
+        }
         return "(" + String.join("|", exceptPatterns) + ")";
     }
 

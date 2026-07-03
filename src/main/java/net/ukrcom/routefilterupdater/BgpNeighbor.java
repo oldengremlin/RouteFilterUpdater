@@ -27,9 +27,17 @@ public class BgpNeighbor {
         this.importPolicy = importPolicy;
     }
 
-    public String getIp() { return ip; }
-    public long getPeerAs() { return peerAs; }
-    public String getImportPolicy() { return importPolicy; }
+    public String getIp() {
+        return ip;
+    }
+
+    public long getPeerAs() {
+        return peerAs;
+    }
+
+    public String getImportPolicy() {
+        return importPolicy;
+    }
 
     @Override
     public String toString() {
