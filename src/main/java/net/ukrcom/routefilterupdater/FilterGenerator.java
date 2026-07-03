@@ -103,9 +103,9 @@ public class FilterGenerator {
                         importPolicy, peerAs);
                 if (strictRpsl) {
                     System.err.printf(
-                            "WARNING: AS%d import policy is accept ANY%n" +
-                            "No prefix filter generated for %s.%n" +
-                            "Verify whether this is intentional or an incomplete RPSL description.%n%n",
+                            "WARNING: AS%d is described in your import policy as \"accept ANY\".%n"
+                            + "No prefix filter generated for %s.%n"
+                            + "Verify whether this is intentional or an incomplete RPSL description.%n%n",
                             peerAs, importPolicy);
                 }
                 skipped++;
