@@ -55,13 +55,12 @@ public class FilterGenerator {
         String routerHost = config.routerIp(ipv6);
         String bgpGroup = config.bgpGroup(ipv6);
 
-        if (routerHost.isBlank()) {
-            throw new IllegalArgumentException(
-                    "ROUTER_IP" + (ipv6 ? "_IPV6" : "") + " not configured");
-        }
+        // routerHost is always non-blank: routerIp(true) falls back to ROUTER_IP if ROUTER_IP_IPV6 is absent
         if (bgpGroup.isBlank()) {
-            throw new IllegalArgumentException(
-                    "BGP_GROUP_IP" + (ipv6 ? "V6" : "V4") + " not configured");
+            throw new IllegalArgumentException("BGP_GROUP_IP" + (ipv6 ? "V6" : "V4") + " not configured");
+        }
+        if (ipv6 && config.routerIpV6.isBlank()) {
+            log.warn("ROUTER_IP_IPV6 not set — falling back to ROUTER_IP ({}) for IPv6 filter generation", routerHost);
         }
 
         List<BgpNeighbor> neighbors;
