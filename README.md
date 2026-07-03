@@ -111,6 +111,7 @@ java -jar target/RouteFilterUpdater-1.0-all.jar [опції]
 | `-r, --report` | Надіслати звіт на `REPORT_TO` |
 | `-d, --debug` | Детальне логування |
 | `-q, --quiet` | Без виводу в консоль (для cron) |
+| `--strict-rpsl` | Виводити попередження на stderr, якщо у peer RPSL-політика `accept ANY` |
 | `-h, --help` | Показати довідку |
 
 ### Приклади

@@ -92,7 +92,7 @@ public class RouteFilterUpdater {
         }
 
         // Generate Junos filter blocks
-        String filters = new FilterGenerator(config).generate(args.ipv6);
+        String filters = new FilterGenerator(config).generate(args.ipv6, args.strictRpsl);
 
         if (filters.isBlank()) {
             log.warn("No filters generated — nothing to do.");
