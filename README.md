@@ -111,6 +111,7 @@ java -jar target/RouteFilterUpdater-1.0-all.jar [опції]
 | `-r, --report` | Надіслати звіт на `REPORT_TO` |
 | `-d, --debug` | Детальне логування |
 | `-q, --quiet` | Без виводу в консоль (для cron) |
+| `--sqlite <файл>` | Використовувати локальну SQLite БД для WHOIS-запитів; якщо AS не знайдено — fallback на живий WHOIS |
 | `--strict-rpsl` | Виводити попередження на stderr, якщо у peer RPSL-політика `accept ANY` |
 | `--strict-rpsl-reverse` | Перевіряти WHOIS peer-а: чи збігається його `export` до нас із тим, що ми очікуємо; виводити попередження при розбіжності (один додатковий WHOIS-запит на peer) |
 | `-h, --help` | Показати довідку |
@@ -218,6 +219,24 @@ src/main/java/net/ukrcom/routefilterupdater/
 | `WHOIS_OPTIONS=-r` | *(видалити)* | Хардкод у WhoisFetcher |
 | `SMTP_SERVER=...` | `SMTP_HOST=...` | Стара назва також приймається |
 | `SMTP_PASSWORD=...` | `SMTP_PASS=...` | Стара назва також приймається |
+
+## Локальна SQLite БД (`--sqlite`)
+
+Опція дозволяє замінити мережеві WHOIS-запити на запити до локальної SQLite БД, сформованої проєктом [whois-lite-local](https://github.com/oldengremlin/whois-lite-local) (оновлюється раз на добу з публічних файлів RIR).
+
+```bash
+java -jar RouteFilterUpdater-1.0-all.jar -4 -s --sqlite /var/db/whoislitelocal.db
+```
+
+**Логіка:**
+1. Якщо `--sqlite` задано → запит до таблиці `rpsl` (де `key='aut-num'`) за AS-номером
+2. Запис знайдено → парсимо поле `block` (той самий формат, що й відповідь живого WHOIS)
+3. Запис **не знайдено** → fallback на живий WHOIS-сервер
+4. Помилка відкриття/запиту БД → попередження в лог + fallback на живий WHOIS
+
+**Переваги:** значно швидше (особливо з `--strict-rpsl-reverse`, де запитів N=кількість peers), менше навантаження на WHOIS-сервери RIPE.
+
+**Обмеження:** БД оновлюється раз на добу; зміни в RIPE DB будуть видимі лише після наступного оновлення.
 
 ## RPSL-діагностика
 

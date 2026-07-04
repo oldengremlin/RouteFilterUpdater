@@ -20,6 +20,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.sql.*;
 import java.util.*;
 import java.util.regex.*;
 
@@ -58,9 +59,11 @@ public class WhoisFetcher {
             Pattern.CASE_INSENSITIVE);
 
     private final String server;
+    private final String sqlitePath; // null → live WHOIS only
 
-    public WhoisFetcher(String server) {
+    public WhoisFetcher(String server, String sqlitePath) {
         this.server = server;
+        this.sqlitePath = sqlitePath;
     }
 
     /**
@@ -71,8 +74,10 @@ public class WhoisFetcher {
      * @throws java.io.IOException
      */
     public Map<Long, WhoisPolicy> fetchSelfAsPolicies(long selfAs) throws IOException {
-        log.info("Querying WHOIS ({}) for AS{}", server, selfAs);
-        String data = queryWithRetry("-r AS" + selfAs);
+        log.info("Querying {} for AS{}",
+                sqlitePath != null ? "SQLite (" + sqlitePath + ")" : "WHOIS (" + server + ")",
+                selfAs);
+        String data = getAsBlock(selfAs);
         Map<Long, WhoisPolicy> result = parsePolicies(data);
         log.info("WHOIS: found import policies for {} peer ASes", result.size());
         if (log.isDebugEnabled()) {
@@ -167,8 +172,9 @@ public class WhoisFetcher {
      * @throws java.io.IOException on WHOIS connectivity failure
      */
     public String fetchPeerExportToSelf(long peerAs, long selfAs, boolean ipv6) throws IOException {
-        log.debug("Querying WHOIS ({}) for AS{} export to AS{}", server, peerAs, selfAs);
-        String data = queryWithRetry("-r AS" + peerAs);
+        log.debug("Querying {} for AS{} export to AS{}",
+                sqlitePath != null ? "SQLite" : "WHOIS", peerAs, selfAs);
+        String data = getAsBlock(peerAs);
         for (String line : data.split("\n")) {
             line = line.trim();
             Matcher m = MP_EXPORT.matcher(line);
@@ -184,6 +190,49 @@ public class WhoisFetcher {
                 if (Long.parseLong(m.group(1)) != selfAs) continue;
                 return extractAcceptSet(m.group(2));
             }
+        }
+        return null;
+    }
+
+    // -------------------------------------------------------------------------
+    // SQLite + fallback logic
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns the raw RPSL block for the given AS number.
+     * If a SQLite DB path is configured: tries the local DB first;
+     * falls back to live WHOIS when the record is absent or the DB is unreadable.
+     * Without SQLite configured: goes directly to live WHOIS.
+     */
+    private String getAsBlock(long asn) throws IOException {
+        if (sqlitePath != null) {
+            String local = queryLocalDb(asn);
+            if (local != null) {
+                log.debug("AS{} found in SQLite", asn);
+                return local;
+            }
+            log.info("AS{} not found in SQLite — falling back to WHOIS ({})", asn, server);
+        }
+        return queryWithRetry("-r AS" + asn);
+    }
+
+    /**
+     * Queries the local SQLite DB for the aut-num block of the given AS.
+     * Returns the block text, or null if not found or on any DB error.
+     */
+    private String queryLocalDb(long asn) {
+        String url = "jdbc:sqlite:" + sqlitePath;
+        try (Connection conn = DriverManager.getConnection(url);
+             PreparedStatement ps = conn.prepareStatement(
+                     "SELECT block FROM rpsl WHERE key = 'aut-num' AND UPPER(value) = UPPER(?)")) {
+            ps.setString(1, "AS" + asn);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getString("block");
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("SQLite query failed for AS{}: {} — falling back to WHOIS", asn, e.getMessage());
         }
         return null;
     }
