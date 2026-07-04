@@ -237,6 +237,30 @@ public class WhoisFetcher {
         return null;
     }
 
+    /**
+     * Returns the AS name for the given ASN, or null if unavailable.
+     * Only queries the local SQLite DB (asn.name column) — no live WHOIS call is made,
+     * so without --sqlite this always returns null.
+     */
+    public String fetchAsName(long asn) {
+        if (sqlitePath == null) return null;
+        String url = "jdbc:sqlite:" + sqlitePath;
+        try (Connection conn = DriverManager.getConnection(url);
+             PreparedStatement ps = conn.prepareStatement(
+                     "SELECT name FROM asn WHERE asn = ? LIMIT 1")) {
+            ps.setLong(1, asn);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String name = rs.getString("name");
+                    return (name != null && !name.isBlank()) ? name.trim() : null;
+                }
+            }
+        } catch (SQLException e) {
+            log.debug("SQLite asn.name query failed for AS{}: {}", asn, e.getMessage());
+        }
+        return null;
+    }
+
     // -------------------------------------------------------------------------
     private String queryWithRetry(String query) throws IOException {
         IOException last = null;

@@ -73,20 +73,23 @@ public class FilterGenerator {
             neighbors = router.getNeighbors(bgpGroup, config.exceptRegex());
         }
 
-        // Step 3: deduplicate by importPolicy; each unique policy gets one filter
-        // (multiple IPs may share the same peerAs + importPolicy)
-        Map<String, Long> policyToAs = new LinkedHashMap<>();
+        // Step 3: deduplicate by importPolicy; each unique policy gets one filter.
+        // Keep the first BgpNeighbor so we have the IP for the section header.
+        // (Multiple IPs may share the same peerAs + importPolicy.)
+        Map<String, BgpNeighbor> policyToNeighbor = new LinkedHashMap<>();
         for (BgpNeighbor n : neighbors) {
-            policyToAs.putIfAbsent(n.getImportPolicy(), n.getPeerAs());
+            policyToNeighbor.putIfAbsent(n.getImportPolicy(), n);
         }
 
-        log.info("Generating {} unique filters ({})...", policyToAs.size(), ipv6 ? "IPv6" : "IPv4");
+        log.info("Generating {} unique filters ({})...", policyToNeighbor.size(), ipv6 ? "IPv6" : "IPv4");
         StringBuilder output = new StringBuilder();
+        StringBuilder annotatedOutput = new StringBuilder();
         int generated = 0, skipped = 0;
 
-        for (var entry : policyToAs.entrySet()) {
+        for (var entry : policyToNeighbor.entrySet()) {
             String importPolicy = entry.getKey();
-            long peerAs = entry.getValue();
+            BgpNeighbor firstNeighbor = entry.getValue();
+            long peerAs = firstNeighbor.getPeerAs();
 
             WhoisPolicy wp = policies.get(peerAs);
             if (wp == null) {
@@ -134,11 +137,20 @@ public class FilterGenerator {
                 }
             }
 
-            log.info("  GEN   {} ← AS{} ← {}", importPolicy, peerAs, acceptSet);
+            String asName = whoisFetcher.fetchAsName(peerAs);
+            log.info("  GEN   {} ← AS{}{} ← {}",
+                    importPolicy, peerAs,
+                    asName != null ? " (" + asName + ")" : "",
+                    acceptSet);
             String termName = ipv6 ? "accept_v6" : "accept";
             String filter = bgpq4.generateFilter(importPolicy, termName, acceptSet, ipv6);
             if (!filter.isBlank()) {
                 output.append(filter).append("\n");
+                String header = "## AS" + peerAs
+                        + " [" + firstNeighbor.getIp() + "]"
+                        + (asName != null ? " " + asName : "");
+                annotatedOutput.append(header).append("\n")
+                               .append(filter).append("\n");
                 generated++;
             } else {
                 log.warn("  EMPTY {} ← {} — bgpq4 returned no prefixes", importPolicy, acceptSet);
@@ -147,6 +159,6 @@ public class FilterGenerator {
         }
 
         log.info("Done: {} filters generated, {} skipped", generated, skipped);
-        return new GenerateResult(output.toString(), List.copyOf(warnings));
+        return new GenerateResult(output.toString(), annotatedOutput.toString(), List.copyOf(warnings));
     }
 }

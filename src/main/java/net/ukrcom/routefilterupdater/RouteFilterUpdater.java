@@ -94,7 +94,10 @@ public class RouteFilterUpdater {
         // Generate Junos filter blocks
         GenerateResult result = new FilterGenerator(config, args.sqlitePath)
                 .generate(args.ipv6, args.strictRpsl, args.strictRpslReverse);
-        String filters = result.filters();
+        // filters          — pure Junos config for the router (no ## headers)
+        // annotatedFilters — human-readable version with ## AS<n> [<ip>] <name> section headers
+        String filters           = result.filters();
+        String annotatedFilters  = result.annotatedFilters();
 
         // Print RPSL warnings to stderr (always visible, even with -q)
         for (String w : result.warnings()) {
@@ -107,15 +110,15 @@ public class RouteFilterUpdater {
             return;
         }
 
-        // Output
+        // Output: annotated version for human consumption
         if (args.outputFile != null) {
-            Files.writeString(Path.of(args.outputFile), filters);
+            Files.writeString(Path.of(args.outputFile), annotatedFilters);
             log.info("Filters written to {}", args.outputFile);
         } else if (!args.save) {
-            System.out.print(filters);
+            System.out.print(annotatedFilters);
         }
 
-        // Apply to router via SSH (load merge terminal)
+        // Apply to router via SSH — pure Junos config, no ## headers
         String compareOutput = "";
         if (args.save) {
             String routerHost = config.routerIp(args.ipv6);
@@ -131,13 +134,13 @@ public class RouteFilterUpdater {
             }
         }
 
-        // Email report
+        // Email report: annotated version + router diff + RPSL warnings
         if (args.report) {
             String subject = String.format("RouteFilterUpdater [%s] %s — %s",
                     proto, args.save ? "applied" : "generated", ts);
             String warningSection = result.warnings().isEmpty() ? ""
                     : "\n\n=== RPSL Warnings ===\n\n" + String.join("\n\n", result.warnings());
-            String body = "=== Route Filters (" + proto + ") ===\n\n" + filters
+            String body = "=== Route Filters (" + proto + ") ===\n\n" + annotatedFilters
                     + (compareOutput.isBlank() ? "" : "\n\n=== Router Changes ===\n\n" + compareOutput)
                     + warningSection;
             new EmailReporter(config).send(subject, body);
