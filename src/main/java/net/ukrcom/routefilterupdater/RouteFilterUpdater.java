@@ -92,7 +92,15 @@ public class RouteFilterUpdater {
         }
 
         // Generate Junos filter blocks
-        String filters = new FilterGenerator(config).generate(args.ipv6, args.strictRpsl);
+        GenerateResult result = new FilterGenerator(config)
+                .generate(args.ipv6, args.strictRpsl, args.strictRpslReverse);
+        String filters = result.filters();
+
+        // Print RPSL warnings to stderr (always visible, even with -q)
+        for (String w : result.warnings()) {
+            System.err.println(w);
+            System.err.println();
+        }
 
         if (filters.isBlank()) {
             log.warn("No filters generated — nothing to do.");
@@ -127,8 +135,11 @@ public class RouteFilterUpdater {
         if (args.report) {
             String subject = String.format("RouteFilterUpdater [%s] %s — %s",
                     proto, args.save ? "applied" : "generated", ts);
+            String warningSection = result.warnings().isEmpty() ? ""
+                    : "\n\n=== RPSL Warnings ===\n\n" + String.join("\n\n", result.warnings());
             String body = "=== Route Filters (" + proto + ") ===\n\n" + filters
-                    + (compareOutput.isBlank() ? "" : "\n\n=== Router Changes ===\n\n" + compareOutput);
+                    + (compareOutput.isBlank() ? "" : "\n\n=== Router Changes ===\n\n" + compareOutput)
+                    + warningSection;
             new EmailReporter(config).send(subject, body);
         }
 

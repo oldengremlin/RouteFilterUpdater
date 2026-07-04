@@ -49,6 +49,14 @@ public class WhoisFetcher {
             "^import:\\s+from\\s+AS(\\d+)(?:\\s+action[^;]+;)?\\s+accept\\s+(.+)$",
             Pattern.CASE_INSENSITIVE);
 
+    private static final Pattern MP_EXPORT = Pattern.compile(
+            "^mp-export:\\s+afi\\s+(ipv4|ipv6)\\.unicast\\s+to\\s+AS(\\d+)(?:\\s+action[^;]+;)?\\s+announce\\s+(.+)$",
+            Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern PLAIN_EXPORT = Pattern.compile(
+            "^export:\\s+to\\s+AS(\\d+)(?:\\s+action[^;]+;)?\\s+announce\\s+(.+)$",
+            Pattern.CASE_INSENSITIVE);
+
     private final String server;
 
     public WhoisFetcher(String server) {
@@ -136,6 +144,45 @@ public class WhoisFetcher {
             }
             if (token.matches("(?i)AS[\\w:-]+")) {
                 return token;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Queries WHOIS for {@code peerAs} and finds what it announces to {@code selfAs}.
+     *
+     * Matches lines of the form:
+     *   export:    to AS&lt;selfAs&gt; [action ...;] announce &lt;set&gt;           (IPv4)
+     *   mp-export: afi ipv4.unicast to AS&lt;selfAs&gt; [action ...;] announce &lt;set&gt;
+     *   mp-export: afi ipv6.unicast to AS&lt;selfAs&gt; [action ...;] announce &lt;set&gt;
+     *
+     * Returns the extracted announce set ("ANY", "AS-SOMETHING", …) or null if
+     * no matching export line is found for the given address family.
+     *
+     * @param peerAs  AS number of the peer to query
+     * @param selfAs  our own AS number (the "to" target in the peer's RPSL)
+     * @param ipv6    true → look for IPv6 export, false → IPv4
+     * @return announced set string, or null if not found
+     * @throws java.io.IOException on WHOIS connectivity failure
+     */
+    public String fetchPeerExportToSelf(long peerAs, long selfAs, boolean ipv6) throws IOException {
+        log.debug("Querying WHOIS ({}) for AS{} export to AS{}", server, peerAs, selfAs);
+        String data = queryWithRetry("-r AS" + peerAs);
+        for (String line : data.split("\n")) {
+            line = line.trim();
+            Matcher m = MP_EXPORT.matcher(line);
+            if (m.find()) {
+                boolean isV6 = "ipv6".equalsIgnoreCase(m.group(1));
+                if (isV6 != ipv6) continue;
+                if (Long.parseLong(m.group(2)) != selfAs) continue;
+                return extractAcceptSet(m.group(3));
+            }
+            m = PLAIN_EXPORT.matcher(line);
+            if (m.find()) {
+                if (ipv6) continue; // plain export: is IPv4 only
+                if (Long.parseLong(m.group(1)) != selfAs) continue;
+                return extractAcceptSet(m.group(2));
             }
         }
         return null;
