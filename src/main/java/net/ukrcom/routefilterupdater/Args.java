@@ -24,6 +24,7 @@ public class Args {
     public boolean report = false;
     public boolean quiet = false;
     public boolean strictRpsl = false;
+    public boolean strictRpslReverse = false;
     public boolean help = false;
 
     public Args(String[] argv) {
@@ -43,6 +44,8 @@ public class Args {
                     quiet = true;
                 case "--strict-rpsl" ->
                     strictRpsl = true;
+                case "--strict-rpsl-reverse" ->
+                    strictRpslReverse = true;
                 case "-h", "-?", "--help" ->
                     help = true;
                 case "-o" -> {
@@ -68,7 +71,9 @@ public class Args {
               -r, --report    Send result to REPORT_TO email
               -d, --debug     Enable debug logging
               -q, --quiet     Suppress console output (for cron jobs)
-              --strict-rpsl   Warn on stderr when a peer's RPSL policy is 'accept ANY'
+              --strict-rpsl         Warn when a peer's RPSL import policy is 'accept ANY'
+              --strict-rpsl-reverse Warn when peer's export to us doesn't match our expected import set
+                                    (makes one extra WHOIS query per peer)
               -h, --help      Show this help
             """);
     }

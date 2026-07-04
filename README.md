@@ -112,6 +112,7 @@ java -jar target/RouteFilterUpdater-1.0-all.jar [опції]
 | `-d, --debug` | Детальне логування |
 | `-q, --quiet` | Без виводу в консоль (для cron) |
 | `--strict-rpsl` | Виводити попередження на stderr, якщо у peer RPSL-політика `accept ANY` |
+| `--strict-rpsl-reverse` | Перевіряти WHOIS peer-а: чи збігається його `export` до нас із тим, що ми очікуємо; виводити попередження при розбіжності (один додатковий WHOIS-запит на peer) |
 | `-h, --help` | Показати довідку |
 
 ### Приклади
@@ -217,6 +218,33 @@ src/main/java/net/ukrcom/routefilterupdater/
 | `WHOIS_OPTIONS=-r` | *(видалити)* | Хардкод у WhoisFetcher |
 | `SMTP_SERVER=...` | `SMTP_HOST=...` | Стара назва також приймається |
 | `SMTP_PASSWORD=...` | `SMTP_PASS=...` | Стара назва також приймається |
+
+## RPSL-діагностика
+
+Обидві опції виводять попередження на **stderr** (завжди, навіть із `-q`). При наявності `-r` попередження також потрапляють у розділ `=== RPSL Warnings ===` email-звіту.
+
+**`--strict-rpsl`** — спрацьовує, коли наша AS очікує від peer-а `accept ANY`:
+```
+WARNING: AS41600 is described in your import policy as "accept ANY".
+No prefix filter generated for Client_plf_SINHRON.
+Verify whether this is intentional or an incomplete RPSL description.
+```
+
+**`--strict-rpsl-reverse`** — для кожного peer-а робить окремий WHOIS-запит і порівнює, що peer оголошує нам (`export: to AS<SELF_AS> announce <set>`) з тим, що ми від нього очікуємо. Варіанти:
+
+Розбіжність (peer каже `ANY`, ми очікуємо `AS-SYNCHRON`):
+```
+RPSL-REVERSE WARNING: AS41600 export to AS12593 declares "ANY" but your import policy expects "AS-SYNCHRON".
+Verify that the RPSL records in both AS objects are consistent.
+```
+
+Запис відсутній у WHOIS peer-а:
+```
+RPSL-REVERSE WARNING: AS41600 has no export to AS12593 in WHOIS.
+Your import policy expects "AS-SYNCHRON" — the peer's RPSL may be incomplete.
+```
+
+Збіг (`export: to AS12593 announce AS57341` і ми очікуємо `AS57341`) — мовчки, без попередження.
 
 ## Логування
 

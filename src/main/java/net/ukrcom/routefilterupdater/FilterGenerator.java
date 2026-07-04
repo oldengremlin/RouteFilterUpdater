@@ -19,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.ArrayList;
 
 /**
  * Orchestrates filter generation:
@@ -47,7 +48,10 @@ public class FilterGenerator {
         this.bgpq4 = new Bgpq4Client(config.bgpq4Path, config.bgpq4Sources);
     }
 
-    public String generate(boolean ipv6, boolean strictRpsl) throws Exception {
+    public GenerateResult generate(boolean ipv6, boolean strictRpsl, boolean strictRpslReverse)
+            throws Exception {
+        List<String> warnings = new ArrayList<>();
+
         // Step 1: WHOIS lookup for SELF_AS
         Map<Long, WhoisPolicy> policies = whoisFetcher.fetchSelfAsPolicies(config.selfAs);
 
@@ -102,14 +106,32 @@ public class FilterGenerator {
                 log.info("  SKIP  {} — AS{} accepts ANY (permit-all, no prefix filter needed)",
                         importPolicy, peerAs);
                 if (strictRpsl) {
-                    System.err.printf(
+                    warnings.add(String.format(
                             "WARNING: AS%d is described in your import policy as \"accept ANY\".%n"
                             + "No prefix filter generated for %s.%n"
-                            + "Verify whether this is intentional or an incomplete RPSL description.%n%n",
-                            peerAs, importPolicy);
+                            + "Verify whether this is intentional or an incomplete RPSL description.",
+                            peerAs, importPolicy));
                 }
                 skipped++;
                 continue;
+            }
+
+            if (strictRpslReverse) {
+                String peerExport = whoisFetcher.fetchPeerExportToSelf(peerAs, config.selfAs, ipv6);
+                log.debug("  RPSL-REVERSE AS{}: peer export to AS{} = {}",
+                        peerAs, config.selfAs, peerExport);
+                if (peerExport == null) {
+                    warnings.add(String.format(
+                            "RPSL-REVERSE WARNING: AS%d has no export to AS%d in WHOIS.%n"
+                            + "Your import policy expects \"%s\" — the peer's RPSL may be incomplete.",
+                            peerAs, config.selfAs, acceptSet));
+                } else if (!peerExport.equalsIgnoreCase(acceptSet)) {
+                    warnings.add(String.format(
+                            "RPSL-REVERSE WARNING: AS%d export to AS%d declares \"%s\""
+                            + " but your import policy expects \"%s\".%n"
+                            + "Verify that the RPSL records in both AS objects are consistent.",
+                            peerAs, config.selfAs, peerExport, acceptSet));
+                }
             }
 
             log.info("  GEN   {} ← AS{} ← {}", importPolicy, peerAs, acceptSet);
@@ -125,6 +147,6 @@ public class FilterGenerator {
         }
 
         log.info("Done: {} filters generated, {} skipped", generated, skipped);
-        return output.toString();
+        return new GenerateResult(output.toString(), List.copyOf(warnings));
     }
 }
