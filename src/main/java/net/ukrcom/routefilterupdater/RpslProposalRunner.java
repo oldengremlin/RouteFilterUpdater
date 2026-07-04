@@ -83,6 +83,7 @@ public class RpslProposalRunner {
             BgpNeighbor neighbor = entry.getValue();
             String asName = whoisFetcher.fetchAsName(peerAs);
 
+            String privatePrefix = isPrivateAsn(peerAs) ? "[PRIVATE]" : "";
             String header = "AS" + peerAs + " [" + neighbor.getIp() + "]"
                     + (asName != null ? " " + asName : "");
 
@@ -94,7 +95,7 @@ public class RpslProposalRunner {
             String peerExport = whoisFetcher.fetchPeerExportToSelf(peerAs, config.selfAs, ipv6);
 
             if (peerExport == null) {
-                System.out.printf("[NO-EXPORT] %s%n", header);
+                System.out.printf("%s[NO-EXPORT] %s%n", privatePrefix, header);
                 System.out.printf("  peer has no %s export to AS%d in WHOIS%n%n", proto, config.selfAs);
                 log.debug("  {} — no export declaration found", header);
                 noExport++;
@@ -102,7 +103,7 @@ public class RpslProposalRunner {
             }
 
             if (peerExport.equalsIgnoreCase("ANY")) {
-                System.out.printf("[WARNING]   %s%n", header);
+                System.out.printf("%s[WARNING]   %s%n", privatePrefix, header);
                 System.out.printf("  peer exports ANY to AS%d — no specific prefix set declared%n%n",
                         config.selfAs);
                 log.debug("  {} — peer exports ANY", header);
@@ -112,7 +113,7 @@ public class RpslProposalRunner {
 
             if (ourAccept == null) {
                 // We have no import entry for this peer in our own WHOIS
-                System.out.printf("[MISSING]   %s%n", header);
+                System.out.printf("%s[MISSING]   %s%n", privatePrefix, header);
                 System.out.printf("  we have no %s import for this peer in AS%d WHOIS%n", proto, config.selfAs);
                 System.out.printf("  peer exports: %s%n", peerExport);
                 System.out.printf("  proposed: mp-import: afi %s from AS%d accept %s%n%n",
@@ -129,7 +130,7 @@ public class RpslProposalRunner {
             }
 
             // Mismatch: our import ≠ peer's export
-            System.out.printf("[MISMATCH]  %s%n", header);
+            System.out.printf("%s[MISMATCH]  %s%n", privatePrefix, header);
             System.out.printf("  our import:   %s%n", ourAccept);
             System.out.printf("  peer exports: %s%n", peerExport);
             System.out.printf("  proposed: mp-import: afi %s from AS%d accept %s%n%n",
@@ -140,5 +141,10 @@ public class RpslProposalRunner {
 
         System.out.printf("--- %s: %d checked, %d matched, %d mismatched/missing, %d ANY warnings, %d no-export%n",
                 proto, asnToNeighbor.size(), matched, mismatched, warnings, noExport);
+    }
+
+    // RFC 6996: 64512–65534 (16-bit) and 4200000000–4294967294 (32-bit)
+    private static boolean isPrivateAsn(long asn) {
+        return (asn >= 64512 && asn <= 65534) || (asn >= 4_200_000_000L && asn <= 4_294_967_294L);
     }
 }
