@@ -87,6 +87,12 @@ public class RouteFilterUpdater {
         String proto = args.ipv6 ? "IPv6" : "IPv4";
         log.info("=== RouteFilterUpdater  {}  {} ===", proto, ts);
 
+        // Standalone RPSL consistency check — does not generate filters
+        if (args.rpslProposal) {
+            new RpslProposalRunner(config, args.sqlitePath).run(args.ipv6);
+            return;
+        }
+
         if (!new Bgpq4Client(config.bgpq4Path, "").isAvailable()) {
             throw new IllegalStateException("bgpq4 not found or not executable: " + config.bgpq4Path);
         }
