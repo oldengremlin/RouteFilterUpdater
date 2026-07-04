@@ -18,7 +18,11 @@ package net.ukrcom.routefilterupdater;
 import java.util.List;
 
 /**
- * Return value of FilterGenerator.generate(): the produced Junos filter config
- * plus any RPSL diagnostic warnings collected during generation.
+ * Return value of FilterGenerator.generate().
+ *
+ * filters          — pure Junos config blocks, safe to send via "load merge terminal"
+ * annotatedFilters — same blocks with "## AS<n> [<ip>] <name>" section headers,
+ *                    intended for file output (-o) and email reports (-r)
+ * warnings         — RPSL diagnostic messages (--strict-rpsl / --strict-rpsl-reverse)
  */
-public record GenerateResult(String filters, List<String> warnings) {}
+public record GenerateResult(String filters, String annotatedFilters, List<String> warnings) {}
