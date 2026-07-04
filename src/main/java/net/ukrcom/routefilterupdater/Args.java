@@ -18,6 +18,7 @@ package net.ukrcom.routefilterupdater;
 public class Args {
 
     public String outputFile = null;
+    public String sqlitePath = null;
     public boolean ipv6 = false;
     public boolean debug = false;
     public boolean save = false;
@@ -53,6 +54,11 @@ public class Args {
                         outputFile = argv[++i];
                     }
                 }
+                case "--sqlite" -> {
+                    if (i + 1 < argv.length) {
+                        sqlitePath = argv[++i];
+                    }
+                }
                 default -> {
                     /* ignore unknown */ }
             }
@@ -71,6 +77,8 @@ public class Args {
               -r, --report    Send result to REPORT_TO email
               -d, --debug     Enable debug logging
               -q, --quiet     Suppress console output (for cron jobs)
+              --sqlite <file>        Use local SQLite DB for WHOIS lookups; falls back to live WHOIS
+                                    if the AS record is not found in the DB
               --strict-rpsl         Warn when a peer's RPSL import policy is 'accept ANY'
               --strict-rpsl-reverse Warn when peer's export to us doesn't match our expected import set
                                     (makes one extra WHOIS query per peer)

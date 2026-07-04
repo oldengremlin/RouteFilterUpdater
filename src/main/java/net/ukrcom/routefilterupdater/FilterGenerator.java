@@ -42,9 +42,9 @@ public class FilterGenerator {
     private final WhoisFetcher whoisFetcher;
     private final Bgpq4Client bgpq4;
 
-    public FilterGenerator(Config config) {
+    public FilterGenerator(Config config, String sqlitePath) {
         this.config = config;
-        this.whoisFetcher = new WhoisFetcher(config.whoisServer);
+        this.whoisFetcher = new WhoisFetcher(config.whoisServer, sqlitePath);
         this.bgpq4 = new Bgpq4Client(config.bgpq4Path, config.bgpq4Sources);
     }
 

@@ -92,7 +92,7 @@ public class RouteFilterUpdater {
         }
 
         // Generate Junos filter blocks
-        GenerateResult result = new FilterGenerator(config)
+        GenerateResult result = new FilterGenerator(config, args.sqlitePath)
                 .generate(args.ipv6, args.strictRpsl, args.strictRpslReverse);
         String filters = result.filters();
 
