@@ -26,6 +26,7 @@ public class Args {
     public boolean quiet = false;
     public boolean strictRpsl = false;
     public boolean strictRpslReverse = false;
+    public boolean rpslProposal = false;
     public boolean help = false;
 
     public Args(String[] argv) {
@@ -47,6 +48,8 @@ public class Args {
                     strictRpsl = true;
                 case "--strict-rpsl-reverse" ->
                     strictRpslReverse = true;
+                case "--rpsl-proposal" ->
+                    rpslProposal = true;
                 case "-h", "-?", "--help" ->
                     help = true;
                 case "-o" -> {
@@ -82,6 +85,10 @@ public class Args {
               --strict-rpsl         Warn when a peer's RPSL import policy is 'accept ANY'
               --strict-rpsl-reverse Warn when peer's export to us doesn't match our expected import set
                                     (makes one extra WHOIS query per peer)
+              --rpsl-proposal       Check RPSL consistency for all active BGP neighbors:
+                                    compare peer's export declaration with our import policy;
+                                    print proposed mp-import lines for mismatches.
+                                    Standalone mode — does not generate filters or apply config.
               -h, --help      Show this help
             """);
     }

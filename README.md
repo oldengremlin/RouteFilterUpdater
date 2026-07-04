@@ -114,6 +114,7 @@ java -jar target/RouteFilterUpdater-1.0-all.jar [опції]
 | `--sqlite <файл>` | Використовувати локальну SQLite БД для WHOIS-запитів; якщо AS не знайдено — fallback на живий WHOIS |
 | `--strict-rpsl` | Виводити попередження на stderr, якщо у peer RPSL-політика `accept ANY` |
 | `--strict-rpsl-reverse` | Перевіряти WHOIS peer-а: чи збігається його `export` до нас із тим, що ми очікуємо; виводити попередження при розбіжності (один додатковий WHOIS-запит на peer) |
+| `--rpsl-proposal` | Автономний режим перевірки узгодженості RPSL: для кожного активного сусіда в BGP-групі зіставляє `export` peer-а з нашим `import`; виводить пропозиції оновлених `mp-import` рядків при розбіжностях. Не генерує фільтри і не застосовує конфігурацію. |
 | `-h, --help` | Показати довідку |
 
 ### Приклади
@@ -264,6 +265,46 @@ Your import policy expects "AS-SYNCHRON" — the peer's RPSL may be incomplete.
 ```
 
 Збіг (`export: to AS12593 announce AS57341` і ми очікуємо `AS57341`) — мовчки, без попередження.
+
+**`--rpsl-proposal`** — автономний режим (фільтри не генеруються, до роутера не підключається). Зчитує активних сусідів із BGP-групи, для кожного peer-а запитує його WHOIS і зіставляє `export` з нашим `import`. Виводить лише відхилення:
+
+Розбіжність між нашим `import` і `export` peer-а:
+```
+[MISMATCH]  AS42545 [212.90.185.30] ASTARTA
+  our import:   AS-SYNCHRON
+  peer exports: AS-SYNCHRON-PEERS
+  proposed: mp-import: afi ipv4.unicast from AS42545 accept AS-SYNCHRON-PEERS
+```
+
+У нас немає `import` для цього peer-а, але peer оголошує конкретний набір:
+```
+[MISSING]   AS99999 [1.2.3.4]
+  we have no IPv4 import for this peer in AS12593 WHOIS
+  peer exports: AS99999
+  proposed: mp-import: afi ipv4.unicast from AS99999 accept AS99999
+```
+
+Peer оголошує `ANY`:
+```
+[WARNING]   AS41600 [5.6.7.8]
+  peer exports ANY to AS12593 — no specific prefix set declared
+```
+
+Peer не має жодного запису `export` до нас:
+```
+[NO-EXPORT] AS77777 [9.9.9.9]
+  peer has no IPv4 export to AS12593 in WHOIS
+```
+
+Збіги — мовчки. Підсумок у останньому рядку:
+```
+--- IPv4: 42 checked, 35 matched, 4 mismatched/missing, 2 ANY warnings, 1 no-export
+```
+
+Вивід іде в stdout; щоб зберегти у файл — перенаправте оболонкою:
+```bash
+java -jar RouteFilterUpdater-1.0-all.jar --rpsl-proposal -4 --sqlite /var/db/whoislitelocal.db > rpsl-proposals.txt
+```
 
 ## Логування
 
