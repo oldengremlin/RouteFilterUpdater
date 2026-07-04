@@ -89,7 +89,7 @@ public class WhoisFetcher {
     // package-private for unit testing
     Map<Long, WhoisPolicy> parsePolicies(String whoisData) {
         Map<Long, WhoisPolicy> result = new LinkedHashMap<>();
-        for (String line : whoisData.split("\n")) {
+        for (String line : joinContinuationLines(whoisData)) {
             parseImportLine(line.trim(), result);
         }
         return result;
@@ -175,7 +175,7 @@ public class WhoisFetcher {
         log.debug("Querying {} for AS{} export to AS{}",
                 sqlitePath != null ? "SQLite" : "WHOIS", peerAs, selfAs);
         String data = getAsBlock(peerAs);
-        for (String line : data.split("\n")) {
+        for (String line : joinContinuationLines(data)) {
             line = line.trim();
             Matcher m = MP_EXPORT.matcher(line);
             if (m.find()) {
@@ -262,6 +262,42 @@ public class WhoisFetcher {
     }
 
     // -------------------------------------------------------------------------
+    // RFC 2622 §2: continuation lines start with whitespace or '+'.
+    // Pre-pass joins them into single logical lines before regex parsing.
+    private static List<String> joinContinuationLines(String data) {
+        List<String> logical = new ArrayList<>();
+        StringBuilder current = null;
+        for (String raw : data.split("\n")) {
+            if (raw.isEmpty()) {
+                if (current != null) {
+                    logical.add(current.toString());
+                    current = null;
+                }
+                continue;
+            }
+            char first = raw.charAt(0);
+            if ((first == ' ' || first == '\t') && current != null) {
+                // whitespace continuation: append trimmed tail
+                current.append(' ').append(raw.trim());
+            } else if (first == '+' && current != null) {
+                // '+' continuation: strip '+', append trimmed tail
+                String rest = raw.substring(1).trim();
+                if (!rest.isEmpty()) {
+                    current.append(' ').append(rest);
+                }
+            } else {
+                if (current != null) {
+                    logical.add(current.toString());
+                }
+                current = new StringBuilder(raw);
+            }
+        }
+        if (current != null) {
+            logical.add(current.toString());
+        }
+        return logical;
+    }
+
     private String queryWithRetry(String query) throws IOException {
         IOException last = null;
         for (int i = 1; i <= MAX_RETRIES; i++) {
