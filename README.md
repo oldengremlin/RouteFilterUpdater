@@ -44,7 +44,7 @@ RouteFilterUpdater — утиліта на Java для автоматизаці�
    mvn clean package
    ```
 
-   Результат: `target/RouteFilterUpdater-1.1.1-all.jar`
+   Результат: `target/RouteFilterUpdater-1.1.2-all.jar`
 
 3. **Налаштування конфігурації**: Створіть `RouteFilterUpdater.properties` поряд із JAR-файлом:
 
@@ -99,7 +99,7 @@ RouteFilterUpdater — утиліта на Java для автоматизаці�
 ## Використання
 
 ```bash
-java -jar target/RouteFilterUpdater-1.1.1-all.jar [опції]
+java -jar target/RouteFilterUpdater-1.1.2-all.jar [опції]
 ```
 
 ### Опції
@@ -133,13 +133,13 @@ java -jar target/RouteFilterUpdater-1.1.1-all.jar [опції]
 
 ```bash
 # Переглянути згенеровані IPv4-фільтри без застосування
-java -jar RouteFilterUpdater-1.1.1-all.jar -4
+java -jar RouteFilterUpdater-1.1.2-all.jar -4
 
 # Зберегти IPv4-фільтри у файл, застосувати та надіслати звіт
-java -jar RouteFilterUpdater-1.1.1-all.jar -4 -o filters-v4.txt -s -r
+java -jar RouteFilterUpdater-1.1.2-all.jar -4 -o filters-v4.txt -s -r
 
 # IPv6-фільтри у тихому режимі (для cron)
-java -jar RouteFilterUpdater-1.1.1-all.jar -6 -s -r -q
+java -jar RouteFilterUpdater-1.1.2-all.jar -6 -s -r -q
 ```
 
 ## Як це працює
@@ -233,7 +233,7 @@ src/main/java/net/ukrcom/routefilterupdater/
 src/test/java/net/ukrcom/routefilterupdater/
 ├── WhoisFetcherTest.java     — розбір атрибутів RPSL (29 тестів)
 ├── RpslFilterParserTest.java — розбір виразів-фільтрів (30 тестів)
-└── WhoisFetcherSqliteTest.java — доступ до локальної SQLite БД (6 тестів)
+└── WhoisFetcherSqliteTest.java — доступ до локальної SQLite БД (9 тестів)
 ```
 
 Тести не потребують мережі: усі методи розбору чисті.
@@ -312,18 +312,45 @@ martian-фільтри на роутері застосовуються окре
 Опція дозволяє замінити мережеві WHOIS-запити на запити до локальної SQLite БД, сформованої проєктом [whois-lite-local](https://github.com/oldengremlin/whois-lite-local) (оновлюється раз на добу з публічних файлів RIR).
 
 ```bash
-java -jar RouteFilterUpdater-1.1.1-all.jar -4 -s --sqlite /var/db/whoislitelocal.db
+java -jar RouteFilterUpdater-1.1.2-all.jar -4 -s --sqlite /var/db/whoislitelocal.db
 ```
 
 **Логіка:**
 1. Якщо `--sqlite` задано → запит до таблиці `rpsl` (де `key='aut-num'`) за AS-номером
 2. Запис знайдено → парсимо поле `block` (той самий формат, що й відповідь живого WHOIS)
 3. Запис **не знайдено** → fallback на живий WHOIS-сервер
-4. Помилка відкриття/запиту БД → попередження в лог + fallback на живий WHOIS
+4. БД непридатна (немає файлу, не та схема) → **`ERROR` у лог один раз** + усі запити йдуть у живий WHOIS
 
 **Переваги:** значно швидше (особливо з `--strict-rpsl-reverse`, де запитів N=кількість peers), менше навантаження на WHOIS-сервери RIPE.
 
 **Обмеження:** БД оновлюється раз на добу; зміни в RIPE DB будуть видимі лише після наступного оновлення.
+
+### Очікувана структура БД
+
+БД **лише читається** — готує її whois-lite-local. З'єднання відкривається в режимі
+read-only (`SQLiteConfig.setReadOnly` до створення з'єднання — драйвер не дозволяє
+міняти цей режим на вже відкритому з'єднанні).
+
+Використовуються дві таблиці:
+
+| Таблиця | Колонки | Запит |
+|---|---|---|
+| `rpsl` | `key`, `value`, `block` | `SELECT block WHERE key='aut-num' AND UPPER(value)=UPPER('AS<n>')` |
+| `asn` | `asn`, `name` | `SELECT name WHERE asn=<n>` |
+
+При відкритті структура перевіряється через `PRAGMA table_info`. Якщо таблиці або
+колонки немає, у лог іде `ERROR` із зазначенням, чого саме бракує, і запуск переходить
+на живий WHOIS. Раніше така розбіжність давала `SQLException` на кожен запит і тиху
+деградацію, яку легко було не помітити.
+
+Юніт-тести працюють на мінімальній тимчасовій БД тієї самої структури. Щоб звірити
+припущення зі справжньою базою, вкажіть шлях до неї:
+
+```bash
+WHOIS_LITE_LOCAL_DB=/var/db/whoislitelocal.db mvn test
+```
+
+Без цієї змінної відповідні тести просто пропускаються.
 
 ## RPSL-діагностика
 
@@ -405,7 +432,7 @@ Peer не має жодного запису `export` до нас:
 
 Вивід іде в stdout; щоб зберегти у файл — перенаправте оболонкою:
 ```bash
-java -jar RouteFilterUpdater-1.1.1-all.jar --rpsl-proposal -4 --sqlite /var/db/whoislitelocal.db > rpsl-proposals.txt
+java -jar RouteFilterUpdater-1.1.2-all.jar --rpsl-proposal -4 --sqlite /var/db/whoislitelocal.db > rpsl-proposals.txt
 ```
 
 ## Логування
