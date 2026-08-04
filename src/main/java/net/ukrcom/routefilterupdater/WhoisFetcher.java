@@ -18,6 +18,7 @@ package net.ukrcom.routefilterupdater;
 import org.apache.commons.net.whois.WhoisClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.sqlite.SQLiteConfig;
 
 import java.io.IOException;
 import java.sql.*;
@@ -74,6 +75,8 @@ public class WhoisFetcher implements AutoCloseable {
     /** Спільне з'єднання з SQLite; відкривається лениво, доступ серіалізовано. */
     private final Object dbLock = new Object();
     private Connection dbConnection;
+    /** Відмову БД запам'ятовуємо, щоб не намагатись відкрити її знову на кожен запит. */
+    private volatile boolean dbUnavailable;
 
     public WhoisFetcher(String server, String sqlitePath) {
         this.server = server;
@@ -133,7 +136,7 @@ public class WhoisFetcher implements AutoCloseable {
      * @return
      */
     public String fetchAsName(long asn) {
-        if (sqlitePath == null) {
+        if (sqlitePath == null || dbUnavailable) {
             return null;
         }
         try {
@@ -177,7 +180,11 @@ public class WhoisFetcher implements AutoCloseable {
             for (long peerAs : pc.peers()) {
                 WhoisPolicy pol = result.computeIfAbsent(peerAs, WhoisPolicy::new);
                 for (AddressFamily af : pc.families()) {
-                    pol.merge(af, pc.sets());
+                    if (pc.unsupported()) {
+                        pol.markUnsupported(af, pc.rawFilter());
+                    } else {
+                        pol.merge(af, pc.sets());
+                    }
                 }
             }
         }
@@ -208,8 +215,15 @@ public class WhoisFetcher implements AutoCloseable {
         return List.copyOf(result);
     }
 
-    /** Розібрана клауза політики: сімейства адрес, перелік peer-ів і набори маршрутів. */
-    private record PolicyClause(Set<AddressFamily> families, List<Long> peers, List<String> sets) {
+    /**
+     * Розібрана клауза політики.
+     *
+     * @param unsupported вираз містить конструкцію, яку bgpq4 не виражає;
+     *                    {@code sets} у такому разі порожній, а {@code rawFilter}
+     *                    зберігає оригінал для діагностики
+     */
+    private record PolicyClause(Set<AddressFamily> families, List<Long> peers,
+                                List<String> sets, boolean unsupported, String rawFilter) {
     }
 
     /**
@@ -239,15 +253,16 @@ public class WhoisFetcher implements AutoCloseable {
         RpslFilterParser.FilterValue value = RpslFilterParser.parse(right);
         if (value.kind() == RpslFilterParser.Kind.UNSUPPORTED) {
             // Позитивне обмеження, яке bgpq4 не виражає (список префіксів, regexp AS-path,
-            // community). Фільтр не генерується — наявний на роутері лишається без змін.
-            log.warn("AS{}: RPSL filter uses constructs bgpq4 cannot express, "
-                    + "no filter will be generated: {}", peers.get(0), right.trim());
-            return null;
+            // community). Позначаємо політику, але не попереджаємо тут: запис SELF_AS
+            // описує й тих peer-ів, яких немає в BGP-групі цього запуску.
+            // Попередження видасть FilterGenerator — лише для реально задіяних peer-ів.
+            return new PolicyClause(parseAfi(left, multiProtocol), peers,
+                    List.of(), true, right.trim());
         }
         if (value.sets().isEmpty()) {
             return null;
         }
-        return new PolicyClause(parseAfi(left, multiProtocol), peers, value.sets());
+        return new PolicyClause(parseAfi(left, multiProtocol), peers, value.sets(), false, null);
     }
 
     /**
@@ -348,11 +363,13 @@ public class WhoisFetcher implements AutoCloseable {
         }
 
         String block = null;
-        if (sqlitePath != null) {
+        if (sqlitePath != null && !dbUnavailable) {
             block = queryLocalDb(asn);
             if (block != null) {
                 log.debug("AS{} found in SQLite", asn);
-            } else {
+            } else if (!dbUnavailable) {
+                // БД доступна, але запису немає — саме тут fallback доречний.
+                // Якщо ж БД взагалі не відкрилась, про це вже сказано один раз у db().
                 log.info("AS{} not found in SQLite — falling back to WHOIS ({})", asn, server);
             }
         }
@@ -390,14 +407,24 @@ public class WhoisFetcher implements AutoCloseable {
     /**
      * Спільне з'єднання з SQLite (відкривається при першому зверненні).
      * Викликати лише під {@link #dbLock}.
+     *
+     * Режим read-only задається через {@link SQLiteConfig} ДО встановлення з'єднання:
+     * драйвер не дозволяє {@code Connection.setReadOnly} на вже відкритому з'єднанні.
      */
     private Connection db() {
+        if (dbUnavailable) {
+            return null;
+        }
         if (dbConnection == null) {
             try {
-                dbConnection = DriverManager.getConnection("jdbc:sqlite:" + sqlitePath);
-                dbConnection.setReadOnly(true);
+                SQLiteConfig cfg = new SQLiteConfig();
+                cfg.setReadOnly(true);
+                dbConnection = cfg.createConnection("jdbc:sqlite:" + sqlitePath);
+                log.debug("SQLite opened read-only: {}", sqlitePath);
             } catch (SQLException e) {
-                log.warn("Cannot open SQLite DB {}: {} — using live WHOIS", sqlitePath, e.getMessage());
+                log.warn("Cannot open SQLite DB {}: {} — using live WHOIS for all lookups",
+                        sqlitePath, e.getMessage());
+                dbUnavailable = true;
                 dbConnection = null;
             }
         }

@@ -106,6 +106,14 @@ public class RpslProposalRunner {
                             af.label(), config.selfAs);
                     noExport++;
                 }
+                case UNSUPPORTED -> {
+                    System.out.printf("%s[UNSUPPORTED] %s%n", o.privateTag(), o.header());
+                    System.out.printf("  our %s import is not expressible for bgpq4: %s%n",
+                            af.label(), o.error());
+                    System.out.printf("  peer exports: %s%n", WhoisPolicy.format(o.peerExport()));
+                    System.out.printf("  proposed: %s%n%n", proposal(af, o));
+                    mismatched++;
+                }
                 case ERROR -> {
                     System.out.printf("%s[ERROR]     %s%n", o.privateTag(), o.header());
                     System.out.printf("  WHOIS lookup failed: %s%n%n", o.error());
@@ -175,6 +183,10 @@ public class RpslProposalRunner {
             kind = Kind.NO_EXPORT;
         } else if (WhoisPolicy.isAny(peerExport)) {
             kind = Kind.ANY_WARNING;
+        } else if (wp != null && wp.getUnsupportedFilter(af) != null) {
+            // Import у нас є, просто bgpq4 його не виражає — це не «немає запису»
+            return new PeerOutcome(peerAs, neighbor, asName, Kind.UNSUPPORTED,
+                    ourAccept, peerExport, wp.getUnsupportedFilter(af));
         } else if (ourAccept.isEmpty()) {
             kind = Kind.MISSING;
         } else if (FilterGenerator.sameSets(ourAccept, peerExport)) {
@@ -190,7 +202,7 @@ public class RpslProposalRunner {
         return (asn >= 64512 && asn <= 65534) || (asn >= 4_200_000_000L && asn <= 4_294_967_294L);
     }
 
-    private enum Kind { MATCH, MISMATCH, MISSING, ANY_WARNING, NO_EXPORT, ERROR }
+    private enum Kind { MATCH, MISMATCH, MISSING, UNSUPPORTED, ANY_WARNING, NO_EXPORT, ERROR }
 
     private record PeerOutcome(long peerAs, BgpNeighbor neighbor, String asName, Kind kind,
                                List<String> ourAccept, List<String> peerExport, String error) {

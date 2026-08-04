@@ -16,7 +16,9 @@
 package net.ukrcom.routefilterupdater;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Набори маршрутів (з import-політик WHOIS), які ми приймаємо від одного peer-а.
@@ -33,6 +35,8 @@ public class WhoisPolicy {
     private final long peerAs;
     private List<String> ipv4Sets = List.of();
     private List<String> ipv6Sets = List.of();
+    /** Оригінал виразу-фільтра, який bgpq4 не виражає (на сімейство адрес). */
+    private final Map<AddressFamily, String> unsupported = new EnumMap<>(AddressFamily.class);
 
     public WhoisPolicy(long peerAs) {
         this.peerAs = peerAs;
@@ -76,6 +80,19 @@ public class WhoisPolicy {
         } else {
             ipv4Sets = merged;
         }
+    }
+
+    /**
+     * Позначає, що RPSL-політика для цього сімейства адрес містить конструкцію,
+     * яку bgpq4 не виражає (список префіксів, regexp AS-path, community).
+     */
+    void markUnsupported(AddressFamily af, String rawFilter) {
+        unsupported.putIfAbsent(af, rawFilter);
+    }
+
+    /** Оригінал невиразного фільтра або null, якщо політика звичайна. */
+    public String getUnsupportedFilter(AddressFamily af) {
+        return unsupported.get(af);
     }
 
     /** true, якщо набір означає {@code accept ANY} (фільтр не потрібен). */
