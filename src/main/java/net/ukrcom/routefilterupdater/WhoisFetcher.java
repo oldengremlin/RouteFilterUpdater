@@ -419,16 +419,53 @@ public class WhoisFetcher implements AutoCloseable {
             try {
                 SQLiteConfig cfg = new SQLiteConfig();
                 cfg.setReadOnly(true);
-                dbConnection = cfg.createConnection("jdbc:sqlite:" + sqlitePath);
+                Connection conn = cfg.createConnection("jdbc:sqlite:" + sqlitePath);
+                verifySchema(conn);
+                dbConnection = conn;
                 log.debug("SQLite opened read-only: {}", sqlitePath);
             } catch (SQLException e) {
-                log.warn("Cannot open SQLite DB {}: {} — using live WHOIS for all lookups",
+                // ERROR, а не WARN: користувач явно задав --sqlite, і мовчазний перехід
+                // на живий WHOIS виглядав би як робота опції.
+                log.error("SQLite DB {} unusable ({}) — ALL lookups will go to live WHOIS",
                         sqlitePath, e.getMessage());
                 dbUnavailable = true;
                 dbConnection = null;
             }
         }
         return dbConnection;
+    }
+
+    /**
+     * Перевіряє, що БД має структуру, якої очікують запити цього класу.
+     *
+     * Схему готує сторонній проєкт whois-lite-local — тут вона лише читається.
+     * Без цієї перевірки розбіжність схеми виявлялась би як SQLException на кожен
+     * запит і тиха деградація до живого WHOIS.
+     */
+    private static void verifySchema(Connection conn) throws SQLException {
+        requireColumns(conn, "rpsl", "key", "value", "block");
+        requireColumns(conn, "asn", "asn", "name");
+    }
+
+    private static void requireColumns(Connection conn, String table, String... columns)
+            throws SQLException {
+        Set<String> present = new HashSet<>();
+        // Назва таблиці — константа коду, не вхідні дані; PRAGMA не приймає параметрів
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (rs.next()) {
+                present.add(rs.getString("name").toLowerCase(Locale.ROOT));
+            }
+        }
+        if (present.isEmpty()) {
+            throw new SQLException("expected table '" + table + "' is missing");
+        }
+        for (String c : columns) {
+            if (!present.contains(c.toLowerCase(Locale.ROOT))) {
+                throw new SQLException(
+                        "table '" + table + "' has no column '" + c + "' (found: " + present + ")");
+            }
+        }
     }
 
     @Override

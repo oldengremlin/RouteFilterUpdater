@@ -88,6 +88,16 @@ public class RouteFilterUpdater {
         }
     }
 
+    /**
+     * Версія збірки з Implementation-Version у маніфесті JAR.
+     * У логу вона потрібна, щоб одразу було видно, чи запущено свіжу збірку,
+     * а не забутий старий jar.
+     */
+    private static String version() {
+        String v = RouteFilterUpdater.class.getPackage().getImplementationVersion();
+        return (v != null && !v.isBlank()) ? "v" + v : "(dev)";
+    }
+
     private static FileLock tryLock(RandomAccessFile f) throws IOException {
         try {
             return f.getChannel().tryLock();
@@ -108,7 +118,7 @@ public class RouteFilterUpdater {
         configureLogging(args, config);
 
         String ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        log.info("=== RouteFilterUpdater  {}  {} ===", args.family.label(), ts);
+        log.info("=== RouteFilterUpdater {}  {}  {} ===", version(), args.family.label(), ts);
 
         try (WhoisFetcher whois = new WhoisFetcher(config.whoisServer, args.sqlitePath)) {
             if (args.rpslProposal) {
