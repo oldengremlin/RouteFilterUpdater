@@ -44,7 +44,16 @@ RouteFilterUpdater — утиліта на Java для автоматизаці�
    mvn clean package
    ```
 
-   Результат: `target/RouteFilterUpdater-1.1.2-all.jar`
+   Результат: `target/RouteFilterUpdater-all.jar`
+
+   Ім'я файлу навмисно **без версії**: збірка завжди перезаписує той самий jar,
+   тож обгортки та cron-задачі не ламаються при зміні версії й не можуть підхопити
+   забутий старий артефакт. Версію видно в маніфесті (`Implementation-Version`)
+   і в першому рядку логу:
+
+   ```
+   === RouteFilterUpdater v1.1.3  IPv4  2026-08-04 11:06:01 ===
+   ```
 
 3. **Налаштування конфігурації**: Створіть `RouteFilterUpdater.properties` поряд із JAR-файлом:
 
@@ -99,7 +108,7 @@ RouteFilterUpdater — утиліта на Java для автоматизаці�
 ## Використання
 
 ```bash
-java -jar target/RouteFilterUpdater-1.1.2-all.jar [опції]
+java -jar target/RouteFilterUpdater-all.jar [опції]
 ```
 
 ### Опції
@@ -133,13 +142,13 @@ java -jar target/RouteFilterUpdater-1.1.2-all.jar [опції]
 
 ```bash
 # Переглянути згенеровані IPv4-фільтри без застосування
-java -jar RouteFilterUpdater-1.1.2-all.jar -4
+java -jar RouteFilterUpdater-all.jar -4
 
 # Зберегти IPv4-фільтри у файл, застосувати та надіслати звіт
-java -jar RouteFilterUpdater-1.1.2-all.jar -4 -o filters-v4.txt -s -r
+java -jar RouteFilterUpdater-all.jar -4 -o filters-v4.txt -s -r
 
 # IPv6-фільтри у тихому режимі (для cron)
-java -jar RouteFilterUpdater-1.1.2-all.jar -6 -s -r -q
+java -jar RouteFilterUpdater-all.jar -6 -s -r -q
 ```
 
 ## Як це працює
@@ -312,7 +321,7 @@ martian-фільтри на роутері застосовуються окре
 Опція дозволяє замінити мережеві WHOIS-запити на запити до локальної SQLite БД, сформованої проєктом [whois-lite-local](https://github.com/oldengremlin/whois-lite-local) (оновлюється раз на добу з публічних файлів RIR).
 
 ```bash
-java -jar RouteFilterUpdater-1.1.2-all.jar -4 -s --sqlite /var/db/whoislitelocal.db
+java -jar RouteFilterUpdater-all.jar -4 -s --sqlite /var/db/whoislitelocal.db
 ```
 
 **Логіка:**
@@ -432,7 +441,7 @@ Peer не має жодного запису `export` до нас:
 
 Вивід іде в stdout; щоб зберегти у файл — перенаправте оболонкою:
 ```bash
-java -jar RouteFilterUpdater-1.1.2-all.jar --rpsl-proposal -4 --sqlite /var/db/whoislitelocal.db > rpsl-proposals.txt
+java -jar RouteFilterUpdater-all.jar --rpsl-proposal -4 --sqlite /var/db/whoislitelocal.db > rpsl-proposals.txt
 ```
 
 ## Логування
