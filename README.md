@@ -44,7 +44,7 @@ RouteFilterUpdater — утиліта на Java для автоматизаці�
    mvn clean package
    ```
 
-   Результат: `target/RouteFilterUpdater-1.0-all.jar`
+   Результат: `target/RouteFilterUpdater-1.1.0-all.jar`
 
 3. **Налаштування конфігурації**: Створіть `RouteFilterUpdater.properties` поряд із JAR-файлом:
 
@@ -99,7 +99,7 @@ RouteFilterUpdater — утиліта на Java для автоматизаці�
 ## Використання
 
 ```bash
-java -jar target/RouteFilterUpdater-1.0-all.jar [опції]
+java -jar target/RouteFilterUpdater-1.1.0-all.jar [опції]
 ```
 
 ### Опції
@@ -133,32 +133,35 @@ java -jar target/RouteFilterUpdater-1.0-all.jar [опції]
 
 ```bash
 # Переглянути згенеровані IPv4-фільтри без застосування
-java -jar RouteFilterUpdater-1.0-all.jar -4
+java -jar RouteFilterUpdater-1.1.0-all.jar -4
 
 # Зберегти IPv4-фільтри у файл, застосувати та надіслати звіт
-java -jar RouteFilterUpdater-1.0-all.jar -4 -o filters-v4.txt -s -r
+java -jar RouteFilterUpdater-1.1.0-all.jar -4 -o filters-v4.txt -s -r
 
 # IPv6-фільтри у тихому режимі (для cron)
-java -jar RouteFilterUpdater-1.0-all.jar -6 -s -r -q
+java -jar RouteFilterUpdater-1.1.0-all.jar -6 -s -r -q
 ```
 
 ## Як це працює
 
 ```
-1. WHOIS(SELF_AS) → Map<peerAs → {ipv4Set, ipv6Set}>   # один запит, in-memory кеш
+1. WHOIS(SELF_AS) → Map<peerAs → {ipv4Sets, ipv6Sets}>   # один запит, in-memory кеш
 
 2. SSH → show configuration protocols bgp group <GROUP>
          | display set | match "(import|peer-as)"
          | except "<EXCEPT_REGEX>"
    → List<BgpNeighbor(ip, peerAs, importPolicy)>
+   порожній список → помилка (код 1), а не тихий нульовий результат
 
-3. Для кожної унікальної importPolicy:
-     acceptSet = whoisMap[peerAs].ipv4Set  (або ipv6Set для -6)
-     якщо acceptSet == ANY → пропустити (дозволяємо все, фільтр не потрібен)
-     termName  = "accept" (IPv4) або "accept_v6" (IPv6)
-     bgpq4 -AJEl <importPolicy>/<termName> <acceptSet>  [-6]
+3. Для кожної унікальної importPolicy (паралельно, до 6 одночасно):
+     acceptSets = whoisMap[peerAs].ipv4Sets  (або ipv6Sets для -6)
+     якщо ANY          → пропустити (дозволяємо все, фільтр не потрібен)
+     якщо порожньо     → пропустити (немає запису в WHOIS)
+     termName = "accept" (IPv4) або "accept_v6" (IPv6)
+     bgpq4 -AJEl <importPolicy>/<termName> <acceptSets...>  [-6]
+     помилка bgpq4 → фільтр пропускається, запуск триває, код виходу 2
 
-4. Об'єднаний вивід → файл / stdout
+4. Об'єднаний вивід у порядку сусідів → файл / stdout
 
 5. Якщо -s:
      SSH shell → configure private
@@ -220,46 +223,77 @@ src/main/java/net/ukrcom/routefilterupdater/
 ├── RouterClient.java         — Junos SSH: getNeighbors + applyFilters
 ├── NeighborLoader.java       — спільне завантаження сусідів з роутера
 ├── JunosOutput.java          — спільні патерни очищення виводу термінала
-├── WhoisFetcher.java         — WHOIS / SQLite + розбір RPSL (import/export)
+├── WhoisFetcher.java         — WHOIS / SQLite + розбір атрибутів import/export
+├── RpslFilterParser.java     — рекурсивний спуск по виразу-фільтру RPSL
 ├── Bgpq4Client.java          — виклик bgpq4 як зовнішнього процесу
 ├── FilterGenerator.java      — головна бізнес-логіка генерації фільтрів
 ├── RpslProposalRunner.java   — автономна перевірка узгодженості RPSL
 └── EmailReporter.java        — надсилання SMTP-звітів
 
 src/test/java/net/ukrcom/routefilterupdater/
-└── WhoisFetcherTest.java     — тести розбору RPSL (28 тестів, без мережі)
+├── WhoisFetcherTest.java     — розбір атрибутів RPSL (29 тестів)
+└── RpslFilterParserTest.java — розбір виразів-фільтрів (30 тестів)
 ```
+
+Тести не потребують мережі: усі методи розбору чисті.
 
 ### Розбір RPSL
 
-Розбір відповідає RFC 2622 і навмисно не є одним монолітним регексом: рядок ділиться
-за ключовим словом `accept` / `announce`, ліва частина дає `afi` та перелік peer-ів,
-права — вираз-фільтр. Завдяки цьому коректно обробляються:
+Розбір відповідає RFC 2622 і складається з двох рівнів.
+
+**Рівень атрибута** (`WhoisFetcher`) — рядок ділиться за ключовим словом `accept` / `announce`:
+ліва частина дає `afi` та перелік peer-ів, права передається парсеру виразу. Завдяки цьому
+коректно обробляються:
 
 - список `afi` через кому: `afi ipv4.unicast, ipv6.unicast from AS1 accept AS-X`
 - клауза `at`: `import: from AS1 at 1.2.3.4 action pref=100; accept AS-X`
 - кілька `from` в одному рядку
 - рядки-продовження (починаються з пробілу, табуляції або `+`)
-- **заперечення**: у `accept NOT AS-BAD AND AS-GOOD` береться `AS-GOOD`, а не `AS-BAD`
-- **віднімання**: `accept AS-A EXCEPT AS-B` дає лише `AS-A`
-- **кілька наборів**: `accept AS-A OR AS-B` дає обидва (bgpq4 приймає їх одним викликом)
+- кілька рядків `import` від одного peer-а об'єднуються, а не затираються першим
+
+**Рівень виразу** (`RpslFilterParser`) — рекурсивний спуск за граматикою RFC 2622 §5.4, §5.6:
+
+```
+filter  := andExpr (OR andExpr)*
+andExpr := unary ((AND | EXCEPT) unary)*      # AND зв'язує сильніше за OR
+unary   := NOT unary | primary
+primary := '(' filter ')' | term
+```
+
+| Вираз | Результат |
+|---|---|
+| `AS-SYNCHRON AND NOT fltr-martian` | `AS-SYNCHRON` |
+| `NOT AS-BAD AND AS-GOOD` | `AS-GOOD` |
+| `AS-A OR AS-B` | `AS-A AS-B` (обидва одним викликом bgpq4) |
+| `AS-A EXCEPT AS-B` | `AS-A` |
+| `NOT (AS-A OR AS-B) AND AS-C` | `AS-C` |
+| `AS-A OR AS-B AND NOT AS-C` | `AS-A AS-B` (пріоритет `AND`) |
+| `ANY AND NOT fltr-martian` | `ANY` — фільтр не потрібен |
+| `RS-CUSTOMERS`, `AS12593:RS-CUSTOMERS` | route-set, передається в bgpq4 |
+
+Заперечені підвирази (`NOT ...`, права частина `EXCEPT`) вважаються нейтральними:
+martian-фільтри на роутері застосовуються окремо.
 
 #### Межі розбору
 
-Це **не** повна реалізація граматики RPSL, а цілеспрямований екстрактор: єдине питання,
-на яке він відповідає — «які AS-SET передати в bgpq4 для цього peer-а й сімейства адрес».
-Розгортанням самих наборів займається bgpq4.
+Це **не** повна реалізація RPSL, а цілеспрямований екстрактор: єдине питання, на яке він
+відповідає — «які набори передати в bgpq4 для цього peer-а й сімейства адрес». Розгортанням
+самих наборів займається bgpq4.
 
-Свідомо не підтримується (такі політики пропускаються без генерації фільтра, з записом у лог):
+Конструкції, які **не виражаються аргументом bgpq4**, розпізнаються явно. Фільтр для такої
+політики не генерується взагалі, в лог пишеться попередження, а наявний фільтр на роутері
+лишається без змін:
 
 - явні списки префіксів: `accept { 192.0.2.0/24^24-32 }`
 - регулярні вирази AS-path: `accept <^AS1 AS2+ AS3*$>`
 - фільтри за community / origin: `accept community(65000:1)`
-- композиція `refine` та протокольні кваліфікатори `protocol BGP4 into RIP`
-- пріоритет операторів: `AND` формально зв'язує сильніше за `OR`, тут вираз обробляється пласко
+- перетин двох наборів: `accept (AS-A OR AS-B) AND AS-C`
 
-Жоден із цих випадків не виражається аргументом bgpq4, тож пропуск — безпечна поведінка:
-наявний фільтр на роутері лишається без змін.
+Останній випадок вартий уваги: об'єднання тут було б **ширшим** за політику, тому парсер
+свідомо відмовляється генерувати фільтр замість того, щоб пропустити зайві префікси.
+
+Також не підтримується композиція `refine` та протокольні кваліфікатори
+`protocol BGP4 into RIP`.
 
 ## Міграція з попередньої версії (rtconfig)
 
@@ -277,7 +311,7 @@ src/test/java/net/ukrcom/routefilterupdater/
 Опція дозволяє замінити мережеві WHOIS-запити на запити до локальної SQLite БД, сформованої проєктом [whois-lite-local](https://github.com/oldengremlin/whois-lite-local) (оновлюється раз на добу з публічних файлів RIR).
 
 ```bash
-java -jar RouteFilterUpdater-1.0-all.jar -4 -s --sqlite /var/db/whoislitelocal.db
+java -jar RouteFilterUpdater-1.1.0-all.jar -4 -s --sqlite /var/db/whoislitelocal.db
 ```
 
 **Логіка:**
@@ -362,7 +396,7 @@ Peer не має жодного запису `export` до нас:
 
 Вивід іде в stdout; щоб зберегти у файл — перенаправте оболонкою:
 ```bash
-java -jar RouteFilterUpdater-1.0-all.jar --rpsl-proposal -4 --sqlite /var/db/whoislitelocal.db > rpsl-proposals.txt
+java -jar RouteFilterUpdater-1.1.0-all.jar --rpsl-proposal -4 --sqlite /var/db/whoislitelocal.db > rpsl-proposals.txt
 ```
 
 ## Логування

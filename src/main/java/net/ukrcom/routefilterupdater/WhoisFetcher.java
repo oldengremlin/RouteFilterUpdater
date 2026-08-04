@@ -65,10 +65,6 @@ public class WhoisFetcher implements AutoCloseable {
     private static final Pattern PEER_AS = Pattern.compile(
             "\\b(?:from|to)\\s+AS(\\d+)", Pattern.CASE_INSENSITIVE);
 
-    /** Ідентифікатор AS/AS-SET, можливо з суфіксом діапазону довжин (AS-FOO^24-24). */
-    private static final Pattern AS_TOKEN = Pattern.compile(
-            "^(AS[\\w:-]+?)(?:\\^[\\d-]+)?$", Pattern.CASE_INSENSITIVE);
-
     private final String server;
     private final String sqlitePath; // null → лише живий WHOIS
 
@@ -240,11 +236,18 @@ public class WhoisFetcher implements AutoCloseable {
             return null;
         }
 
-        List<String> sets = extractAcceptSets(right);
-        if (sets.isEmpty()) {
+        RpslFilterParser.FilterValue value = RpslFilterParser.parse(right);
+        if (value.kind() == RpslFilterParser.Kind.UNSUPPORTED) {
+            // Позитивне обмеження, яке bgpq4 не виражає (список префіксів, regexp AS-path,
+            // community). Фільтр не генерується — наявний на роутері лишається без змін.
+            log.warn("AS{}: RPSL filter uses constructs bgpq4 cannot express, "
+                    + "no filter will be generated: {}", peers.get(0), right.trim());
             return null;
         }
-        return new PolicyClause(parseAfi(left, multiProtocol), peers, sets);
+        if (value.sets().isEmpty()) {
+            return null;
+        }
+        return new PolicyClause(parseAfi(left, multiProtocol), peers, value.sets());
     }
 
     /**
@@ -273,80 +276,25 @@ public class WhoisFetcher implements AutoCloseable {
     }
 
     /**
-     * Витягує набори AS/AS-SET із виразу-фільтра RPSL.
+     * Витягує набори AS-SET / route-set із виразу-фільтра RPSL.
      *
-     * Враховує заперечення: терм під {@code NOT} до результату не потрапляє.
-     * Раніше сканувався перший AS-подібний токен, тож
-     * {@code accept NOT AS-BAD AND AS-GOOD} повертало саме {@code AS-BAD} —
-     * тобто фільтр будувався з того, що RPSL забороняє.
+     * Тонка обгортка над {@link RpslFilterParser} — розбір робить рекурсивний спуск
+     * із дотриманням пріоритету операторів. Вирази, які bgpq4 не виражає,
+     * дають порожній список (детальніше — у {@link RpslFilterParser}).
      *
      * <pre>
      *   "AS-SYNCHRON AND NOT fltr-martian"  → [AS-SYNCHRON]
      *   "NOT fltr-martian AND AS51475"      → [AS51475]
      *   "NOT AS-BAD AND AS-GOOD"            → [AS-GOOD]
      *   "AS-A OR AS-B"                      → [AS-A, AS-B]
+     *   "AS-A EXCEPT AS-B"                  → [AS-A]
      *   "NOT (AS-A OR AS-B) AND AS-C"       → [AS-C]
      *   "ANY"                               → [ANY]
      *   "fltr-unallocated"                  → []
      * </pre>
      */
     static List<String> extractAcceptSets(String clause) {
-        List<String> out = new ArrayList<>();
-        String[] tokens = clause.replace("(", " ( ").replace(")", " ) ").trim().split("\\s+");
-
-        boolean negateNext = false;
-        int depth = 0;
-        int negatedGroupDepth = -1;
-
-        for (String raw : tokens) {
-            String t = raw.replaceAll("[,;]+$", "");
-            if (t.isEmpty()) {
-                continue;
-            }
-            if ("(".equals(t)) {
-                depth++;
-                if (negateNext && negatedGroupDepth < 0) {
-                    negatedGroupDepth = depth;   // уся група під запереченням
-                    negateNext = false;
-                }
-                continue;
-            }
-            if (")".equals(t)) {
-                if (negatedGroupDepth == depth) {
-                    negatedGroupDepth = -1;
-                }
-                depth--;
-                continue;
-            }
-            if (negatedGroupDepth >= 0) {
-                continue;                        // всередині NOT (...)
-            }
-            // EXCEPT — це віднімання (RFC 2622 §5.6: "A EXCEPT B" = A без B),
-            // тож наступний терм виключається так само, як після NOT.
-            if (t.equalsIgnoreCase("NOT") || t.equalsIgnoreCase("EXCEPT")) {
-                negateNext = true;
-                continue;
-            }
-            if (t.equalsIgnoreCase("AND") || t.equalsIgnoreCase("OR")) {
-                continue;
-            }
-            // Далі — терм фільтра
-            if (negateNext) {
-                negateNext = false;              // заперечений терм пропускаємо
-                continue;
-            }
-            if (t.equalsIgnoreCase("ANY")) {
-                return WhoisPolicy.ANY;
-            }
-            Matcher m = AS_TOKEN.matcher(t);
-            if (m.matches()) {
-                String set = m.group(1);
-                if (out.stream().noneMatch(x -> x.equalsIgnoreCase(set))) {
-                    out.add(set);
-                }
-            }
-        }
-        return List.copyOf(out);
+        return RpslFilterParser.parse(clause).sets();
     }
 
     /**
