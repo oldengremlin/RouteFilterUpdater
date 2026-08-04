@@ -78,11 +78,17 @@ public class FilterGenerator {
             }
         }
 
+        // Зі --strict-rpsl-reverse кожна політика тягне ще й WHOIS-запит. Якщо він піде
+        // в живий WHOIS, шість паралельних з'єднань RADB рве — тому беремо менше з двох меж.
+        int concurrency = strictRpslReverse
+                ? Math.min(BGPQ4_CONCURRENCY, whoisFetcher.recommendedConcurrency())
+                : BGPQ4_CONCURRENCY;
+
         log.info("Generating {} unique filters ({}), up to {} in parallel...",
-                policyToNeighbor.size(), af.label(), BGPQ4_CONCURRENCY);
+                policyToNeighbor.size(), af.label(), concurrency);
 
         List<PolicyOutcome> outcomes = runInParallel(
-                policyToNeighbor, policies, af, strictRpsl, strictRpslReverse);
+                policyToNeighbor, policies, af, strictRpsl, strictRpslReverse, concurrency);
 
         // Збірка результату в порядку сусідів — щоб файл і диф читались передбачувано
         StringBuilder output = new StringBuilder();
@@ -136,8 +142,9 @@ public class FilterGenerator {
                                               Map<Long, WhoisPolicy> policies,
                                               AddressFamily af,
                                               boolean strictRpsl,
-                                              boolean strictRpslReverse) throws Exception {
-        Semaphore permits = new Semaphore(BGPQ4_CONCURRENCY);
+                                              boolean strictRpslReverse,
+                                              int concurrency) throws Exception {
+        Semaphore permits = new Semaphore(concurrency);
         List<PolicyOutcome> outcomes = new ArrayList<>(policyToNeighbor.size());
 
         try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
@@ -173,6 +180,18 @@ public class FilterGenerator {
         if (wp == null) {
             return PolicyOutcome.skipped(importPolicy, neighbor,
                     "AS" + peerAs + " has no WHOIS import entry", warnings);
+        }
+
+        String unsupportedFilter = wp.getUnsupportedFilter(af);
+        if (unsupportedFilter != null) {
+            warnings.add(String.format(
+                    "WARNING: AS%d %s import policy uses constructs bgpq4 cannot express: %s%n"
+                    + "No filter generated for %s — the existing filter on the router"
+                    + " was left unchanged.",
+                    peerAs, af.label(), unsupportedFilter, importPolicy));
+            return PolicyOutcome.skipped(importPolicy, neighbor,
+                    "AS" + peerAs + " filter not expressible for bgpq4: " + unsupportedFilter,
+                    warnings);
         }
 
         List<String> acceptSets = wp.getAcceptSets(af);

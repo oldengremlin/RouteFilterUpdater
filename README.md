@@ -6,7 +6,7 @@ RouteFilterUpdater — утиліта на Java для автоматизаці�
 
 - **bgpq4** як єдиний інструмент генерації фільтрів — виводить готовий Junos-формат з `replace:` маркерами.
 - **Один WHOIS-запит** на запуск — для SELF_AS, результат кешується в пам'яті; окремих запитів для кожного сусіда немає.
-- **Паралельна генерація** — до 6 викликів bgpq4 одночасно на віртуальних потоках (JDK 21); порядок виводу зберігається.
+- **Паралельна генерація** — до 6 викликів bgpq4 одночасно на віртуальних потоках (JDK 21); порядок виводу зберігається. Зі `--strict-rpsl-reverse` межа знижується до можливостей джерела WHOIS (3 для живого, 8 для SQLite), щоб не отримати `Connection reset` від RADB.
 - **Підтримка IPv4 та IPv6** — окремі BGP-групи й маршрутні фільтри для кожного сімейства адрес.
 - **Застосування через `load merge terminal`** — без покомандної відправки `delete/set`, конфігурація завантажується одним блоком.
 - **Блокування через `FileLock`** — запобігає одночасному запуску кількох екземплярів; ОС звільняє блокування навіть після `kill -9`, тож «застряглих» lock-файлів не буває.
@@ -44,7 +44,7 @@ RouteFilterUpdater — утиліта на Java для автоматизаці�
    mvn clean package
    ```
 
-   Результат: `target/RouteFilterUpdater-1.1.0-all.jar`
+   Результат: `target/RouteFilterUpdater-1.1.1-all.jar`
 
 3. **Налаштування конфігурації**: Створіть `RouteFilterUpdater.properties` поряд із JAR-файлом:
 
@@ -99,7 +99,7 @@ RouteFilterUpdater — утиліта на Java для автоматизаці�
 ## Використання
 
 ```bash
-java -jar target/RouteFilterUpdater-1.1.0-all.jar [опції]
+java -jar target/RouteFilterUpdater-1.1.1-all.jar [опції]
 ```
 
 ### Опції
@@ -133,13 +133,13 @@ java -jar target/RouteFilterUpdater-1.1.0-all.jar [опції]
 
 ```bash
 # Переглянути згенеровані IPv4-фільтри без застосування
-java -jar RouteFilterUpdater-1.1.0-all.jar -4
+java -jar RouteFilterUpdater-1.1.1-all.jar -4
 
 # Зберегти IPv4-фільтри у файл, застосувати та надіслати звіт
-java -jar RouteFilterUpdater-1.1.0-all.jar -4 -o filters-v4.txt -s -r
+java -jar RouteFilterUpdater-1.1.1-all.jar -4 -o filters-v4.txt -s -r
 
 # IPv6-фільтри у тихому режимі (для cron)
-java -jar RouteFilterUpdater-1.1.0-all.jar -6 -s -r -q
+java -jar RouteFilterUpdater-1.1.1-all.jar -6 -s -r -q
 ```
 
 ## Як це працює
@@ -232,7 +232,8 @@ src/main/java/net/ukrcom/routefilterupdater/
 
 src/test/java/net/ukrcom/routefilterupdater/
 ├── WhoisFetcherTest.java     — розбір атрибутів RPSL (29 тестів)
-└── RpslFilterParserTest.java — розбір виразів-фільтрів (30 тестів)
+├── RpslFilterParserTest.java — розбір виразів-фільтрів (30 тестів)
+└── WhoisFetcherSqliteTest.java — доступ до локальної SQLite БД (6 тестів)
 ```
 
 Тести не потребують мережі: усі методи розбору чисті.
@@ -311,7 +312,7 @@ martian-фільтри на роутері застосовуються окре
 Опція дозволяє замінити мережеві WHOIS-запити на запити до локальної SQLite БД, сформованої проєктом [whois-lite-local](https://github.com/oldengremlin/whois-lite-local) (оновлюється раз на добу з публічних файлів RIR).
 
 ```bash
-java -jar RouteFilterUpdater-1.1.0-all.jar -4 -s --sqlite /var/db/whoislitelocal.db
+java -jar RouteFilterUpdater-1.1.1-all.jar -4 -s --sqlite /var/db/whoislitelocal.db
 ```
 
 **Логіка:**
@@ -381,6 +382,14 @@ Peer не має жодного запису `export` до нас:
   peer has no IPv4 export to AS12593 in WHOIS
 ```
 
+Наш `import` існує, але bgpq4 його не виражає:
+```
+[UNSUPPORTED] AS48533 [3.3.3.3]
+  our IPv4 import is not expressible for bgpq4: {0.0.0.0/0}
+  peer exports: AS48533
+  proposed: mp-import: afi ipv4.unicast from AS48533 accept AS48533
+```
+
 Запит до WHOIS не вдався:
 ```
 [ERROR]     AS88888 [7.7.7.7]
@@ -396,7 +405,7 @@ Peer не має жодного запису `export` до нас:
 
 Вивід іде в stdout; щоб зберегти у файл — перенаправте оболонкою:
 ```bash
-java -jar RouteFilterUpdater-1.1.0-all.jar --rpsl-proposal -4 --sqlite /var/db/whoislitelocal.db > rpsl-proposals.txt
+java -jar RouteFilterUpdater-1.1.1-all.jar --rpsl-proposal -4 --sqlite /var/db/whoislitelocal.db > rpsl-proposals.txt
 ```
 
 ## Логування
