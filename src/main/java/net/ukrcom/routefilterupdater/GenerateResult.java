@@ -18,11 +18,21 @@ package net.ukrcom.routefilterupdater;
 import java.util.List;
 
 /**
- * Return value of FilterGenerator.generate().
+ * Результат {@link FilterGenerator#generate}.
  *
- * filters          — pure Junos config blocks, safe to send via "load merge terminal"
- * annotatedFilters — same blocks with "## AS<n> [<ip>] <name>" section headers,
- *                    intended for file output (-o) and email reports (-r)
- * warnings         — RPSL diagnostic messages (--strict-rpsl / --strict-rpsl-reverse)
+ * @param filters          чистий Junos-конфіг, придатний для "load merge terminal"
+ * @param annotatedFilters ті самі блоки із заголовками "## AS&lt;n&gt; [&lt;ip&gt;] &lt;name&gt;"
+ *                         для файлу (-o) і звіту (-r)
+ * @param warnings         діагностика RPSL і помилки генерації
+ * @param generated        скільки фільтрів згенеровано
+ * @param skipped          скільки пропущено (accept ANY, немає запису в WHOIS тощо)
+ * @param failed           скільки не вдалося згенерувати через помилку bgpq4
  */
-public record GenerateResult(String filters, String annotatedFilters, List<String> warnings) {}
+public record GenerateResult(String filters, String annotatedFilters, List<String> warnings,
+                             int generated, int skipped, int failed) {
+
+    /** true, якщо хоча б один фільтр не вдалося згенерувати. */
+    public boolean hasFailures() {
+        return failed > 0;
+    }
+}

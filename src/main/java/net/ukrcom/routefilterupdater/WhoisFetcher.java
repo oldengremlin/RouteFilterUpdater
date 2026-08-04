@@ -22,44 +22,58 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.sql.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.*;
 
 /**
- * Queries a WHOIS server for the SELF_AS record and parses mp-import / import lines
- * to build a map of (peerAs → WhoisPolicy) indicating what each peer announces.
+ * Запитує WHOIS (або локальну SQLite БД) і розбирає RPSL-політики.
  *
- * Supported line formats:
- *   mp-import: afi ipv4.unicast from AS12345 accept AS-SOMETHING AND NOT fltr-martian
- *   mp-import: afi ipv6.unicast from AS12345 accept AS-SOMETHING-V6 AND NOT fltr-martian-v6
- *   import:    from AS12345 action pref=100; accept AS12345
+ * Підтримувані форми атрибутів (RFC 2622):
+ * <pre>
+ *   import:    from AS12345 accept AS-SOMETHING
+ *   import:    from AS12345 at 1.2.3.4 action pref=100; accept AS12345
+ *   mp-import: afi ipv4.unicast from AS12345 accept AS-X AND NOT fltr-martian
+ *   mp-import: afi ipv4.unicast, ipv6.unicast from AS1 accept AS-X OR AS-Y
+ *   export:    to AS12345 announce AS-OURS
+ *   mp-export: afi ipv6.unicast to AS12345 announce AS-OURS-V6
+ * </pre>
  *
- * The accept-set token is the first token after "accept" that matches AS[...] or is "ANY".
- * Handles "accept NOT fltr-martian AND AS51475" by scanning all tokens, not just the first.
+ * Розбір навмисно не є одним монолітним регексом: рядок ділиться за ключовим
+ * словом accept/announce, ліва частина дає afi та перелік peer-ів, права —
+ * вираз-фільтр. Це дозволяє коректно обробляти список afi через кому,
+ * клаузу {@code at} і кілька {@code from} в одному рядку.
  */
-public class WhoisFetcher {
+public class WhoisFetcher implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(WhoisFetcher.class);
     private static final int TIMEOUT_MS = 10_000;
     private static final int MAX_RETRIES = 3;
 
-    private static final Pattern MP_IMPORT = Pattern.compile(
-            "^mp-import:\\s+afi\\s+(ipv4|ipv6)\\.unicast\\s+from\\s+AS(\\d+)\\s+accept\\s+(.+)$",
-            Pattern.CASE_INSENSITIVE);
+    /** Атрибут import / mp-import разом із тілом. */
+    private static final Pattern IMPORT_ATTR = Pattern.compile(
+            "^(mp-)?import:\\s*(.+)$", Pattern.CASE_INSENSITIVE);
 
-    private static final Pattern PLAIN_IMPORT = Pattern.compile(
-            "^import:\\s+from\\s+AS(\\d+)(?:\\s+action[^;]+;)?\\s+accept\\s+(.+)$",
-            Pattern.CASE_INSENSITIVE);
+    /** Атрибут export / mp-export разом із тілом. */
+    private static final Pattern EXPORT_ATTR = Pattern.compile(
+            "^(mp-)?export:\\s*(.+)$", Pattern.CASE_INSENSITIVE);
 
-    private static final Pattern MP_EXPORT = Pattern.compile(
-            "^mp-export:\\s+afi\\s+(ipv4|ipv6)\\.unicast\\s+to\\s+AS(\\d+)(?:\\s+action[^;]+;)?\\s+announce\\s+(.+)$",
-            Pattern.CASE_INSENSITIVE);
+    /** Клауза afi перед from/to; значення може бути списком через кому. */
+    private static final Pattern AFI_CLAUSE = Pattern.compile(
+            "\\bafi\\s+(.+?)\\s+(?=\\b(?:from|to)\\b)", Pattern.CASE_INSENSITIVE);
 
-    private static final Pattern PLAIN_EXPORT = Pattern.compile(
-            "^export:\\s+to\\s+AS(\\d+)(?:\\s+action[^;]+;)?\\s+announce\\s+(.+)$",
-            Pattern.CASE_INSENSITIVE);
+    /** Кожен peer у лівій частині: from AS123 / to AS123. */
+    private static final Pattern PEER_AS = Pattern.compile(
+            "\\b(?:from|to)\\s+AS(\\d+)", Pattern.CASE_INSENSITIVE);
 
     private final String server;
-    private final String sqlitePath; // null → live WHOIS only
+    private final String sqlitePath; // null → лише живий WHOIS
+
+    /** Кеш сирих RPSL-блоків за номером AS — один AS запитується не більше разу за запуск. */
+    private final Map<Long, String> blockCache = new ConcurrentHashMap<>();
+
+    /** Спільне з'єднання з SQLite; відкривається лениво, доступ серіалізовано. */
+    private final Object dbLock = new Object();
+    private Connection dbConnection;
 
     public WhoisFetcher(String server, String sqlitePath) {
         this.server = server;
@@ -67,18 +81,27 @@ public class WhoisFetcher {
     }
 
     /**
-     * Queries WHOIS for {@code selfAs} and returns a map of peerAs → WhoisPolicy.
-     * The result is cached in-memory for the lifetime of this run.
+     * Скільки запитів має сенс виконувати паралельно.
+     * Локальна БД витримує багато, живий WHOIS ріже за rate limit.
+     */
+    public int recommendedConcurrency() {
+        return sqlitePath != null ? 8 : 3;
+    }
+
+    // -------------------------------------------------------------------------
+    // Публічний API
+    // -------------------------------------------------------------------------
+    /**
+     * Запитує запис SELF_AS і повертає мапу peerAs → WhoisPolicy.
      * @param selfAs
-     * @return 
+     * @return
      * @throws java.io.IOException
      */
     public Map<Long, WhoisPolicy> fetchSelfAsPolicies(long selfAs) throws IOException {
         log.info("Querying {} for AS{}",
                 sqlitePath != null ? "SQLite (" + sqlitePath + ")" : "WHOIS (" + server + ")",
                 selfAs);
-        String data = getAsBlock(selfAs);
-        Map<Long, WhoisPolicy> result = parsePolicies(data);
+        Map<Long, WhoisPolicy> result = parsePolicies(getAsBlock(selfAs));
         log.info("WHOIS: found import policies for {} peer ASes", result.size());
         if (log.isDebugEnabled()) {
             result.forEach((as, pol) -> log.debug("  AS{}: {}", as, pol));
@@ -86,173 +109,48 @@ public class WhoisFetcher {
         return result;
     }
 
-    // package-private for unit testing
-    Map<Long, WhoisPolicy> parsePolicies(String whoisData) {
-        Map<Long, WhoisPolicy> result = new LinkedHashMap<>();
-        for (String line : joinContinuationLines(whoisData)) {
-            parseImportLine(line.trim(), result);
-        }
-        return result;
-    }
-
-    private void parseImportLine(String line, Map<Long, WhoisPolicy> out) {
-        Matcher m = MP_IMPORT.matcher(line);
-        if (m.find()) {
-            boolean v6 = "ipv6".equalsIgnoreCase(m.group(1));
-            long peerAs = Long.parseLong(m.group(2));
-            String accept = extractAcceptSet(m.group(3));
-            if (accept != null) {
-                applyToPolicy(out, peerAs, accept, v6);
-            }
-            return;
-        }
-        m = PLAIN_IMPORT.matcher(line);
-        if (m.find()) {
-            long peerAs = Long.parseLong(m.group(1));
-            String accept = extractAcceptSet(m.group(2));
-            if (accept != null) {
-                applyToPolicy(out, peerAs, accept, false);
-            }
-        }
-    }
-
-    private static void applyToPolicy(Map<Long, WhoisPolicy> map,
-                                      long peerAs, String acceptSet, boolean v6) {
-        WhoisPolicy pol = map.computeIfAbsent(peerAs, WhoisPolicy::new);
-        if (v6) {
-            if (pol.getIpv6Set() == null) {
-                pol.setIpv6Set(acceptSet);
-            }
-        } else {
-            if (pol.getIpv4Set() == null) {
-                pol.setIpv4Set(acceptSet);
-            }
-        }
-    }
-
     /**
-     * Extracts the AS / AS-SET identifier from the accept clause.
-     * Returns "ANY" if the clause is a catch-all, or null if no AS identifier found.
+     * Запитує WHOIS peer-а і повертає те, що він оголошує в наш бік.
      *
-     * Examples:
-     *   "AS-SYNCHRON AND NOT fltr-martian"       → "AS-SYNCHRON"
-     *   "AS42545 AND NOT fltr-martian"            → "AS42545"
-     *   "NOT fltr-martian AND AS51475"            → "AS51475"
-     *   "AS43180:AS-TRUNKNETWORKS AND NOT …"      → "AS43180:AS-TRUNKNETWORKS"
-     *   "ANY"                                     → "ANY"
-     *   "fltr-unallocated"                        → null
+     * @param peerAs номер AS peer-а
+     * @param selfAs наш номер AS (ціль "to" в RPSL peer-а)
+     * @param af     сімейство адрес
+     * @return список оголошених наборів; порожній — запису немає
+     * @throws java.io.IOException при недоступності WHOIS
      */
-    static String extractAcceptSet(String clause) {
-        for (String token : clause.trim().split("\\s+")) {
-            if (token.equalsIgnoreCase("ANY")) {
-                return "ANY";
-            }
-            if (token.matches("(?i)AS[\\w:-]+")) {
-                return token;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Queries WHOIS for {@code peerAs} and finds what it announces to {@code selfAs}.
-     *
-     * Matches lines of the form:
-     *   export:    to AS&lt;selfAs&gt; [action ...;] announce &lt;set&gt;           (IPv4)
-     *   mp-export: afi ipv4.unicast to AS&lt;selfAs&gt; [action ...;] announce &lt;set&gt;
-     *   mp-export: afi ipv6.unicast to AS&lt;selfAs&gt; [action ...;] announce &lt;set&gt;
-     *
-     * Returns the extracted announce set ("ANY", "AS-SOMETHING", …) or null if
-     * no matching export line is found for the given address family.
-     *
-     * @param peerAs  AS number of the peer to query
-     * @param selfAs  our own AS number (the "to" target in the peer's RPSL)
-     * @param ipv6    true → look for IPv6 export, false → IPv4
-     * @return announced set string, or null if not found
-     * @throws java.io.IOException on WHOIS connectivity failure
-     */
-    public String fetchPeerExportToSelf(long peerAs, long selfAs, boolean ipv6) throws IOException {
+    public List<String> fetchPeerExportToSelf(long peerAs, long selfAs, AddressFamily af)
+            throws IOException {
         log.debug("Querying {} for AS{} export to AS{}",
                 sqlitePath != null ? "SQLite" : "WHOIS", peerAs, selfAs);
-        String data = getAsBlock(peerAs);
-        for (String line : joinContinuationLines(data)) {
-            line = line.trim();
-            Matcher m = MP_EXPORT.matcher(line);
-            if (m.find()) {
-                boolean isV6 = "ipv6".equalsIgnoreCase(m.group(1));
-                if (isV6 != ipv6) continue;
-                if (Long.parseLong(m.group(2)) != selfAs) continue;
-                return extractAcceptSet(m.group(3));
-            }
-            m = PLAIN_EXPORT.matcher(line);
-            if (m.find()) {
-                if (ipv6) continue; // plain export: is IPv4 only
-                if (Long.parseLong(m.group(1)) != selfAs) continue;
-                return extractAcceptSet(m.group(2));
-            }
-        }
-        return null;
-    }
-
-    // -------------------------------------------------------------------------
-    // SQLite + fallback logic
-    // -------------------------------------------------------------------------
-
-    /**
-     * Returns the raw RPSL block for the given AS number.
-     * If a SQLite DB path is configured: tries the local DB first;
-     * falls back to live WHOIS when the record is absent or the DB is unreadable.
-     * Without SQLite configured: goes directly to live WHOIS.
-     */
-    private String getAsBlock(long asn) throws IOException {
-        if (sqlitePath != null) {
-            String local = queryLocalDb(asn);
-            if (local != null) {
-                log.debug("AS{} found in SQLite", asn);
-                return local;
-            }
-            log.info("AS{} not found in SQLite — falling back to WHOIS ({})", asn, server);
-        }
-        return queryWithRetry("-r AS" + asn);
+        return parseExport(getAsBlock(peerAs), selfAs, af);
     }
 
     /**
-     * Queries the local SQLite DB for the aut-num block of the given AS.
-     * Returns the block text, or null if not found or on any DB error.
-     */
-    private String queryLocalDb(long asn) {
-        String url = "jdbc:sqlite:" + sqlitePath;
-        try (Connection conn = DriverManager.getConnection(url);
-             PreparedStatement ps = conn.prepareStatement(
-                     "SELECT block FROM rpsl WHERE key = 'aut-num' AND UPPER(value) = UPPER(?)")) {
-            ps.setString(1, "AS" + asn);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return rs.getString("block");
-                }
-            }
-        } catch (SQLException e) {
-            log.warn("SQLite query failed for AS{}: {} — falling back to WHOIS", asn, e.getMessage());
-        }
-        return null;
-    }
-
-    /**
-     * Returns the AS name for the given ASN, or null if unavailable.
-     * Only queries the local SQLite DB (asn.name column) — no live WHOIS call is made,
-     * so without --sqlite this always returns null.
+     * Назва AS або null, якщо недоступна.
+     * Читається лише з локальної SQLite (колонка asn.name) — без --sqlite завжди null,
+     * щоб не робити зайвий мережевий запит на кожного peer-а.
+     * @param asn
+     * @return
      */
     public String fetchAsName(long asn) {
-        if (sqlitePath == null) return null;
-        String url = "jdbc:sqlite:" + sqlitePath;
-        try (Connection conn = DriverManager.getConnection(url);
-             PreparedStatement ps = conn.prepareStatement(
-                     "SELECT name FROM asn WHERE asn = ? LIMIT 1")) {
-            ps.setLong(1, asn);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    String name = rs.getString("name");
-                    return (name != null && !name.isBlank()) ? name.trim() : null;
+        if (sqlitePath == null) {
+            return null;
+        }
+        try {
+            synchronized (dbLock) {
+                Connection conn = db();
+                if (conn == null) {
+                    return null;
+                }
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT name FROM asn WHERE asn = ? LIMIT 1")) {
+                    ps.setLong(1, asn);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            String name = rs.getString("name");
+                            return (name != null && !name.isBlank()) ? name.trim() : null;
+                        }
+                    }
                 }
             }
         } catch (SQLException e) {
@@ -262,9 +160,148 @@ public class WhoisFetcher {
     }
 
     // -------------------------------------------------------------------------
-    // RFC 2622 §2: continuation lines start with whitespace or '+'.
-    // Pre-pass joins them into single logical lines before regex parsing.
-    private static List<String> joinContinuationLines(String data) {
+    // Розбір RPSL (package-private — покрито юніт-тестами)
+    // -------------------------------------------------------------------------
+    Map<Long, WhoisPolicy> parsePolicies(String whoisData) {
+        Map<Long, WhoisPolicy> result = new LinkedHashMap<>();
+        for (String line : joinContinuationLines(whoisData)) {
+            Matcher attr = IMPORT_ATTR.matcher(line.trim());
+            if (!attr.matches()) {
+                continue;
+            }
+            boolean multiProtocol = attr.group(1) != null;
+            PolicyClause pc = parseClause(attr.group(2), "accept", multiProtocol);
+            if (pc == null) {
+                continue;
+            }
+            for (long peerAs : pc.peers()) {
+                WhoisPolicy pol = result.computeIfAbsent(peerAs, WhoisPolicy::new);
+                for (AddressFamily af : pc.families()) {
+                    pol.merge(af, pc.sets());
+                }
+            }
+        }
+        return result;
+    }
+
+    List<String> parseExport(String block, long selfAs, AddressFamily af) {
+        List<String> result = new ArrayList<>();
+        for (String line : joinContinuationLines(block)) {
+            Matcher attr = EXPORT_ATTR.matcher(line.trim());
+            if (!attr.matches()) {
+                continue;
+            }
+            boolean multiProtocol = attr.group(1) != null;
+            PolicyClause pc = parseClause(attr.group(2), "announce", multiProtocol);
+            if (pc == null || !pc.families().contains(af) || !pc.peers().contains(selfAs)) {
+                continue;
+            }
+            if (WhoisPolicy.isAny(pc.sets())) {
+                return WhoisPolicy.ANY;
+            }
+            for (String s : pc.sets()) {
+                if (result.stream().noneMatch(x -> x.equalsIgnoreCase(s))) {
+                    result.add(s);
+                }
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    /** Розібрана клауза політики: сімейства адрес, перелік peer-ів і набори маршрутів. */
+    private record PolicyClause(Set<AddressFamily> families, List<Long> peers, List<String> sets) {
+    }
+
+    /**
+     * Ділить тіло атрибута за ключовим словом (accept / announce) і розбирає обидві частини.
+     * Повертає null, якщо ключового слова немає, peer-ів не знайдено або набір порожній.
+     */
+    private static PolicyClause parseClause(String body, String keyword, boolean multiProtocol) {
+        Matcher kw = Pattern.compile("\\b" + keyword + "\\b", Pattern.CASE_INSENSITIVE).matcher(body);
+        if (!kw.find()) {
+            return null;
+        }
+        String left = body.substring(0, kw.start());
+        String right = body.substring(kw.end());
+
+        List<Long> peers = new ArrayList<>();
+        Matcher pm = PEER_AS.matcher(left);
+        while (pm.find()) {
+            long as = Long.parseLong(pm.group(1));
+            if (!peers.contains(as)) {
+                peers.add(as);
+            }
+        }
+        if (peers.isEmpty()) {
+            return null;
+        }
+
+        RpslFilterParser.FilterValue value = RpslFilterParser.parse(right);
+        if (value.kind() == RpslFilterParser.Kind.UNSUPPORTED) {
+            // Позитивне обмеження, яке bgpq4 не виражає (список префіксів, regexp AS-path,
+            // community). Фільтр не генерується — наявний на роутері лишається без змін.
+            log.warn("AS{}: RPSL filter uses constructs bgpq4 cannot express, "
+                    + "no filter will be generated: {}", peers.get(0), right.trim());
+            return null;
+        }
+        if (value.sets().isEmpty()) {
+            return null;
+        }
+        return new PolicyClause(parseAfi(left, multiProtocol), peers, value.sets());
+    }
+
+    /**
+     * Визначає сімейства адрес із клаузи afi.
+     * Без afi: {@code import:} — лише IPv4; {@code mp-import:} — обидва (RPSL default).
+     */
+    private static Set<AddressFamily> parseAfi(String left, boolean multiProtocol) {
+        Matcher m = AFI_CLAUSE.matcher(left);
+        if (!m.find()) {
+            return multiProtocol
+                    ? EnumSet.allOf(AddressFamily.class)
+                    : EnumSet.of(AddressFamily.V4);
+        }
+        Set<AddressFamily> families = EnumSet.noneOf(AddressFamily.class);
+        for (String entry : m.group(1).split("\\s*,\\s*")) {
+            String e = entry.trim().toLowerCase(Locale.ROOT);
+            if (e.startsWith("ipv4")) {
+                families.add(AddressFamily.V4);
+            } else if (e.startsWith("ipv6")) {
+                families.add(AddressFamily.V6);
+            } else if (e.startsWith("any")) {
+                families.addAll(EnumSet.allOf(AddressFamily.class));
+            }
+        }
+        return families.isEmpty() ? EnumSet.of(AddressFamily.V4) : families;
+    }
+
+    /**
+     * Витягує набори AS-SET / route-set із виразу-фільтра RPSL.
+     *
+     * Тонка обгортка над {@link RpslFilterParser} — розбір робить рекурсивний спуск
+     * із дотриманням пріоритету операторів. Вирази, які bgpq4 не виражає,
+     * дають порожній список (детальніше — у {@link RpslFilterParser}).
+     *
+     * <pre>
+     *   "AS-SYNCHRON AND NOT fltr-martian"  → [AS-SYNCHRON]
+     *   "NOT fltr-martian AND AS51475"      → [AS51475]
+     *   "NOT AS-BAD AND AS-GOOD"            → [AS-GOOD]
+     *   "AS-A OR AS-B"                      → [AS-A, AS-B]
+     *   "AS-A EXCEPT AS-B"                  → [AS-A]
+     *   "NOT (AS-A OR AS-B) AND AS-C"       → [AS-C]
+     *   "ANY"                               → [ANY]
+     *   "fltr-unallocated"                  → []
+     * </pre>
+     */
+    static List<String> extractAcceptSets(String clause) {
+        return RpslFilterParser.parse(clause).sets();
+    }
+
+    /**
+     * RFC 2622 §2: рядок-продовження починається з пробілу, табуляції або '+'.
+     * Об'єднує такі рядки в один логічний перед регекс-розбором.
+     */
+    static List<String> joinContinuationLines(String data) {
         List<String> logical = new ArrayList<>();
         StringBuilder current = null;
         for (String raw : data.split("\n")) {
@@ -277,10 +314,8 @@ public class WhoisFetcher {
             }
             char first = raw.charAt(0);
             if ((first == ' ' || first == '\t') && current != null) {
-                // whitespace continuation: append trimmed tail
                 current.append(' ').append(raw.trim());
             } else if (first == '+' && current != null) {
-                // '+' continuation: strip '+', append trimmed tail
                 String rest = raw.substring(1).trim();
                 if (!rest.isEmpty()) {
                     current.append(' ').append(rest);
@@ -298,6 +333,92 @@ public class WhoisFetcher {
         return logical;
     }
 
+    // -------------------------------------------------------------------------
+    // Отримання даних: SQLite + fallback на живий WHOIS
+    // -------------------------------------------------------------------------
+    /**
+     * Сирий RPSL-блок для заданого AS.
+     * Спершу кеш, далі локальна БД (якщо задано --sqlite), далі живий WHOIS.
+     */
+    private String getAsBlock(long asn) throws IOException {
+        String cached = blockCache.get(asn);
+        if (cached != null) {
+            log.debug("AS{} taken from in-memory cache", asn);
+            return cached;
+        }
+
+        String block = null;
+        if (sqlitePath != null) {
+            block = queryLocalDb(asn);
+            if (block != null) {
+                log.debug("AS{} found in SQLite", asn);
+            } else {
+                log.info("AS{} not found in SQLite — falling back to WHOIS ({})", asn, server);
+            }
+        }
+        if (block == null) {
+            block = queryWithRetry("-r AS" + asn);
+        }
+        blockCache.putIfAbsent(asn, block);
+        return block;
+    }
+
+    /** Блок aut-num з локальної БД або null, якщо запису немає чи БД недоступна. */
+    private String queryLocalDb(long asn) {
+        try {
+            synchronized (dbLock) {
+                Connection conn = db();
+                if (conn == null) {
+                    return null;
+                }
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT block FROM rpsl WHERE key = 'aut-num' AND UPPER(value) = UPPER(?)")) {
+                    ps.setString(1, "AS" + asn);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            return rs.getString("block");
+                        }
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("SQLite query failed for AS{}: {} — falling back to WHOIS", asn, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Спільне з'єднання з SQLite (відкривається при першому зверненні).
+     * Викликати лише під {@link #dbLock}.
+     */
+    private Connection db() {
+        if (dbConnection == null) {
+            try {
+                dbConnection = DriverManager.getConnection("jdbc:sqlite:" + sqlitePath);
+                dbConnection.setReadOnly(true);
+            } catch (SQLException e) {
+                log.warn("Cannot open SQLite DB {}: {} — using live WHOIS", sqlitePath, e.getMessage());
+                dbConnection = null;
+            }
+        }
+        return dbConnection;
+    }
+
+    @Override
+    public void close() {
+        synchronized (dbLock) {
+            if (dbConnection != null) {
+                try {
+                    dbConnection.close();
+                } catch (SQLException e) {
+                    log.debug("Error closing SQLite connection: {}", e.getMessage());
+                }
+                dbConnection = null;
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     private String queryWithRetry(String query) throws IOException {
         IOException last = null;
         for (int i = 1; i <= MAX_RETRIES; i++) {

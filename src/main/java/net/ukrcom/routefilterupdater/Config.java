@@ -44,7 +44,8 @@ public class Config {
     public final String bgpGroupV4;
     public final String bgpGroupV6;
     public final long selfAs;
-    public final String[] exceptPatterns;
+    /** Готовий регекс для Junos-фільтра {@code | except "..."}; null, якщо винятків немає. */
+    public final String exceptRegex;
     public final String bgpq4Path;
     public final String bgpq4Sources;
     public final String whoisServer;
@@ -73,8 +74,12 @@ public class Config {
         bgpGroupV6 = p.getProperty("BGP_GROUP_IPV6", "");
         selfAs = parseSelfAs(require(p, "SELF_AS"));
 
+        // Кома-розділений список одразу згортається у готовий регекс:
+        // "(Client_world_uaix_in|Client_PFTS_in|TE_IN)"
         String except = p.getProperty("EXCEPT_REGEX", "");
-        exceptPatterns = except.isBlank() ? new String[0] : except.split(",\\s*");
+        exceptRegex = except.isBlank()
+                ? null
+                : "(" + String.join("|", except.trim().split("\\s*,\\s*")) + ")";
 
         bgpq4Path = require(p, "BGPQ4_PATH");
         // Accept legacy IRR_SOURCES as fallback
@@ -92,38 +97,26 @@ public class Config {
     }
 
     /**
-     * Returns the SSH management host for the given address family.
-     * For IPv6 mode: uses ROUTER_IP_IPV6 if set, otherwise falls back to ROUTER_IP.
-     * Rationale: the router's BGP group may carry IPv6 peers while SSH management
-     * is reachable only via IPv4.
+     * SSH-адреса керування для заданого сімейства адрес.
+     * Для IPv6 використовує ROUTER_IP_IPV6, якщо задано, інакше — ROUTER_IP.
+     * Причина: BGP-група може містити IPv6-пірів, тоді як SSH-керування
+     * доступне лише через IPv4.
      *
-     * @param ipv6
-     * @return
+     * @param af сімейство адрес
+     * @return адреса роутера
      */
-    public String routerIp(boolean ipv6) {
-        if (ipv6 && !routerIpV6.isBlank()) {
+    public String routerIp(AddressFamily af) {
+        if (af.isV6() && !routerIpV6.isBlank()) {
             return routerIpV6;
         }
         return routerIp;
     }
 
-    /** Returns the BGP group name for the given address family.
-     * @param ipv6
-     * @return  */
-    public String bgpGroup(boolean ipv6) {
-        return ipv6 ? bgpGroupV6 : bgpGroupV4;
-    }
-
-    /**
-     * Builds a combined regex from EXCEPT_REGEX entries for use in Junos pipe filters,
-     * e.g. "(Client_world_uaix_in|Client_PFTS_in|TE_IN)". Returns null if empty.
-     * @return 
-     */
-    public String exceptRegex() {
-        if (exceptPatterns.length == 0) {
-            return null;
-        }
-        return "(" + String.join("|", exceptPatterns) + ")";
+    /** Назва BGP-групи для заданого сімейства адрес.
+     * @param af сімейство адрес
+     * @return назва групи (може бути порожньою, якщо не налаштовано) */
+    public String bgpGroup(AddressFamily af) {
+        return af.isV6() ? bgpGroupV6 : bgpGroupV4;
     }
 
     private static String require(Properties p, String key) {

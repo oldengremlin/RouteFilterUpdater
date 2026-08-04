@@ -25,18 +25,18 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Invokes the bgpq4 binary to generate Junos-format route filters.
+ * Запускає bgpq4 для генерації маршрутних фільтрів у форматі Junos.
  *
- * Command template:
- *   bgpq4 -A -J -E [-6] [-S <sources>] -l <policyName>/<termName> <asSet>
+ * Шаблон команди:
+ *   bgpq4 -A -J -E [-6] [-S &lt;sources&gt;] -l &lt;policyName&gt;/&lt;termName&gt; &lt;asSet&gt;...
  *
- * Flags used:
- *   -A  aggregate prefixes
- *   -J  JunOS output format
- *   -E  add replace: keyword (for load merge terminal)
- *   -6  IPv6 mode
- *   -S  comma-separated list of IRR databases (optional)
- *   -l  <policy-statement>/<term>  sets the JunOS policy-statement and term names
+ * Прапорці:
+ *   -A  агрегація префіксів
+ *   -J  формат JunOS
+ *   -E  маркер replace: (для load merge terminal)
+ *   -6  режим IPv6
+ *   -S  список IRR-баз через кому (опційно)
+ *   -l  &lt;policy-statement&gt;/&lt;term&gt; — назви policy-statement і терму
  */
 public class Bgpq4Client {
 
@@ -51,68 +51,96 @@ public class Bgpq4Client {
         this.sources = sources;
     }
 
-    /** Returns true if the bgpq4 binary exists and is executable. */
-    public boolean isAvailable() {
+    /** true, якщо бінарник bgpq4 існує і виконуваний. */
+    public static boolean isAvailable(String bgpq4Path) {
         File f = new File(bgpq4Path);
         return f.exists() && f.canExecute();
     }
 
     /**
-     * Generates a Junos policy-statement block for {@code asSet}.
+     * Генерує Junos policy-statement для заданих наборів.
      *
-     * @param policyName  Junos policy-statement name (e.g. "Client_plf_SINHRON")
-     * @param termName    Junos term name         (e.g. "accept")
-     * @param asSet       AS number or AS-SET    (e.g. "AS-SYNCHRON" or "AS42545")
-     * @param ipv6        true for IPv6 (-6 flag)
-     * @return Junos config block ready for "load merge terminal", or empty string if no prefixes
-     * @throws java.io.IOException
+     * Ненульовий код завершення трактується як помилка, а не попередження: bgpq4
+     * може вивести частину префіксів і зірватись на IRR, а блок із {@code replace:}
+     * замінив би повний список префіксів урізаним — це чорна діра для трафіку клієнта.
+     *
+     * @param policyName назва Junos policy-statement (напр. "Client_plf_SINHRON")
+     * @param af         сімейство адрес (визначає прапорець -6 і назву терму)
+     * @param asSets     номери AS / AS-SET (напр. ["AS-SYNCHRON"] або ["AS-A", "AS-B"])
+     * @return Junos-блок, готовий до "load merge terminal"; порожній рядок — префіксів немає
+     * @throws java.io.IOException якщо bgpq4 завершився з помилкою або не вклався в таймаут
      * @throws java.lang.InterruptedException
      */
-    public String generateFilter(String policyName, String termName,
-                                 String asSet, boolean ipv6)
+    public String generateFilter(String policyName, AddressFamily af, List<String> asSets)
             throws IOException, InterruptedException {
 
-        List<String> cmd = buildCommand(policyName, termName, asSet, ipv6);
+        List<String> cmd = buildCommand(policyName, af, asSets);
         log.debug("bgpq4: {}", String.join(" ", cmd));
 
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(true);
-        Process proc = pb.start();
+        // stderr читається окремо від stdout: раніше redirectErrorStream(true) зливав
+        // діагностику bgpq4 у той самий потік, що потім ставав конфігурацією роутера.
+        Process proc = new ProcessBuilder(cmd).start();
 
         StringBuilder out = new StringBuilder();
-        try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                out.append(line).append("\n");
-            }
-        }
+        StringBuilder err = new StringBuilder();
+        Thread tOut = drainAsync(proc.getInputStream(), out);
+        Thread tErr = drainAsync(proc.getErrorStream(), err);
 
         boolean finished = proc.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         if (!finished) {
+            // Примусове завершення закриває потоки й розблоковує читачів,
+            // тому таймаут спрацьовує навіть якщо bgpq4 завис на IRR-запиті.
             proc.destroyForcibly();
-            throw new IOException("bgpq4 timed out for " + asSet);
+            proc.waitFor();
         }
+        tOut.join(5_000);
+        tErr.join(5_000);
 
+        String stderr = err.toString().trim();
+        if (!finished) {
+            throw new IOException("bgpq4 timed out after " + TIMEOUT_SECONDS + "s for "
+                    + String.join(" ", asSets));
+        }
         if (proc.exitValue() != 0) {
-            log.warn("bgpq4 exited with code {} for {}", proc.exitValue(), asSet);
+            throw new IOException("bgpq4 exited with code " + proc.exitValue()
+                    + " for " + String.join(" ", asSets)
+                    + (stderr.isEmpty() ? "" : ": " + stderr));
+        }
+        if (!stderr.isEmpty()) {
+            log.warn("bgpq4 stderr for {}: {}", String.join(" ", asSets), stderr);
         }
 
         String result = out.toString().trim();
         if (result.isEmpty()) {
-            log.warn("bgpq4 returned empty result for {} ({})", asSet, ipv6 ? "IPv6" : "IPv4");
+            log.warn("bgpq4 returned empty result for {} ({})",
+                    String.join(" ", asSets), af.label());
         }
         return result;
     }
 
-    private List<String> buildCommand(String policyName, String termName,
-                                      String asSet, boolean ipv6) {
+    /** Читає потік у фоні (віртуальний потік), щоб stdout і stderr не блокували один одного. */
+    private static Thread drainAsync(InputStream stream, StringBuilder sink) {
+        return Thread.ofVirtual().start(() -> {
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    sink.append(line).append('\n');
+                }
+            } catch (IOException e) {
+                // Потік закрито через destroyForcibly — очікувано при таймауті
+                log.debug("Stream drain ended: {}", e.getMessage());
+            }
+        });
+    }
+
+    private List<String> buildCommand(String policyName, AddressFamily af, List<String> asSets) {
         List<String> cmd = new ArrayList<>();
         cmd.add(bgpq4Path);
-        cmd.add("-A");  // aggregate
-        cmd.add("-J");  // JunOS format
-        cmd.add("-E");  // replace: marker
-        if (ipv6) {
+        cmd.add("-A");  // агрегація
+        cmd.add("-J");  // формат JunOS
+        cmd.add("-E");  // маркер replace:
+        if (af.isV6()) {
             cmd.add("-6");
         }
         if (sources != null && !sources.isBlank()) {
@@ -120,8 +148,8 @@ public class Bgpq4Client {
             cmd.add(sources);
         }
         cmd.add("-l");
-        cmd.add(policyName + "/" + termName);
-        cmd.add(asSet);
+        cmd.add(policyName + "/" + af.termName());
+        cmd.addAll(asSets);
         return cmd;
     }
 }

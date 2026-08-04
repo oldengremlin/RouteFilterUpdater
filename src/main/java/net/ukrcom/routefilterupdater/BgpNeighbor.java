@@ -15,29 +15,10 @@
  */
 package net.ukrcom.routefilterupdater;
 
-public class BgpNeighbor {
-
-    private final String ip;
-    private final long peerAs;
-    private final String importPolicy;
-
-    public BgpNeighbor(String ip, long peerAs, String importPolicy) {
-        this.ip = ip;
-        this.peerAs = peerAs;
-        this.importPolicy = importPolicy;
-    }
-
-    public String getIp() {
-        return ip;
-    }
-
-    public long getPeerAs() {
-        return peerAs;
-    }
-
-    public String getImportPolicy() {
-        return importPolicy;
-    }
+/**
+ * BGP-сусід, зчитаний з конфігурації роутера: адреса, peer-as і назва import-політики.
+ */
+public record BgpNeighbor(String ip, long peerAs, String importPolicy) {
 
     @Override
     public String toString() {

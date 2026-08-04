@@ -15,11 +15,21 @@
  */
 package net.ukrcom.routefilterupdater;
 
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Розбір аргументів командного рядка.
+ *
+ * Невідомі опції та опції без обов'язкового значення більше не ігноруються:
+ * одрук на кшталт {@code --strict-rspl} раніше мовчки нічого не робив, і запуск
+ * виглядав успішним, хоча запитану перевірку не виконано.
+ */
 public class Args {
 
     public String outputFile = null;
     public String sqlitePath = null;
-    public boolean ipv6 = false;
+    public AddressFamily family = AddressFamily.V4;
     public boolean debug = false;
     public boolean save = false;
     public boolean report = false;
@@ -29,13 +39,17 @@ public class Args {
     public boolean rpslProposal = false;
     public boolean help = false;
 
+    /** Помилки розбору; непорожній список означає відмову запуску. */
+    public final List<String> errors = new ArrayList<>();
+
     public Args(String[] argv) {
         for (int i = 0; i < argv.length; i++) {
-            switch (argv[i]) {
+            String arg = argv[i];
+            switch (arg) {
                 case "-4" ->
-                    ipv6 = false;
+                    family = AddressFamily.V4;
                 case "-6" ->
-                    ipv6 = true;
+                    family = AddressFamily.V6;
                 case "-d", "--debug" ->
                     debug = true;
                 case "-s", "--save" ->
@@ -55,15 +69,19 @@ public class Args {
                 case "-o" -> {
                     if (i + 1 < argv.length) {
                         outputFile = argv[++i];
+                    } else {
+                        errors.add("Option -o requires a file path");
                     }
                 }
                 case "--sqlite" -> {
                     if (i + 1 < argv.length) {
                         sqlitePath = argv[++i];
+                    } else {
+                        errors.add("Option --sqlite requires a path to the SQLite database");
                     }
                 }
-                default -> {
-                    /* ignore unknown */ }
+                default ->
+                    errors.add("Unknown option: " + arg);
             }
         }
     }
@@ -90,6 +108,11 @@ public class Args {
                                     print proposed mp-import lines for mismatches.
                                     Standalone mode — does not generate filters or apply config.
               -h, --help      Show this help
+
+            Exit codes:
+              0  success
+              1  fatal error (configuration, router unreachable, another instance running)
+              2  completed with problems (some filters failed, RPSL mismatches found)
             """);
     }
 }
