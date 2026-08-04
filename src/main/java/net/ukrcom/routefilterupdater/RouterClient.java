@@ -178,12 +178,11 @@ public class RouterClient implements AutoCloseable {
     }
 
     private static String cleanOutput(String raw, String username) {
+        Pattern promptLine = JunosOutput.promptLine(username);
         StringBuilder sb = new StringBuilder();
         for (String line : raw.split("\n")) {
-            line = line.replaceAll(
-                    "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]|[\\x1B]\\[[0-9;]*[a-zA-Z]", ""
-            ).trim();
-            if (!line.isBlank() && !line.matches(Pattern.quote(username) + "@[^>#]+[>#].*")) {
+            line = JunosOutput.stripAnsi(line).trim();
+            if (!line.isBlank() && !promptLine.matcher(line).matches()) {
                 sb.append(line).append("\n");
             }
         }

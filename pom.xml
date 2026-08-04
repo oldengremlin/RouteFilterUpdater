@@ -21,11 +21,14 @@
             <artifactId>logback-classic</artifactId>
             <version>1.5.32</version>
         </dependency>
+        <!-- Підтримуваний форк JSch: той самий пакет com.jcraft.jsch, drop-in заміна.
+             Оригінальний com.jcraft:jsch покинуто у 2018 і він не вміє сучасних
+             алгоритмів обміну ключами, які вимагають нові версії Junos. -->
         <dependency>
-            <groupId>com.jcraft</groupId>
+            <groupId>com.github.mwiede</groupId>
             <artifactId>jsch</artifactId>
-            <version>0.1.55</version>
-        </dependency>    
+            <version>0.2.21</version>
+        </dependency>
         <dependency>
             <groupId>commons-net</groupId>
             <artifactId>commons-net</artifactId>
@@ -42,6 +45,12 @@
             <artifactId>sqlite-jdbc</artifactId>
             <version>3.47.0.0</version>
         </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.11.4</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -54,6 +63,11 @@
                     <!-- Не падати якщо лог-файл заблокований запущеним екземпляром -->
                     <failOnError>false</failOnError>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

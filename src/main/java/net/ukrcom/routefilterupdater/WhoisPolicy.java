@@ -15,15 +15,24 @@
  */
 package net.ukrcom.routefilterupdater;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * Stores the accepted route sets (from WHOIS import policies) for a single peer AS.
- * Built from mp-import / import lines of the SELF_AS WHOIS record.
+ * Набори маршрутів (з import-політик WHOIS), які ми приймаємо від одного peer-а.
+ * Будується з рядків mp-import / import запису SELF_AS.
+ *
+ * Зберігається саме список наборів, а не один рядок: RPSL дозволяє
+ * {@code accept AS-A OR AS-B}, і раніше другий набір мовчки губився.
  */
 public class WhoisPolicy {
 
+    /** Позначка «приймаємо все» — RPSL {@code accept ANY}. */
+    public static final List<String> ANY = List.of("ANY");
+
     private final long peerAs;
-    private String ipv4Set;
-    private String ipv6Set;
+    private List<String> ipv4Sets = List.of();
+    private List<String> ipv6Sets = List.of();
 
     public WhoisPolicy(long peerAs) {
         this.peerAs = peerAs;
@@ -33,31 +42,54 @@ public class WhoisPolicy {
         return peerAs;
     }
 
-    public String getIpv4Set() {
-        return ipv4Set;
+    /** Набори для заданого сімейства адрес; порожній список — запису немає. */
+    public List<String> getAcceptSets(AddressFamily af) {
+        return af.isV6() ? ipv6Sets : ipv4Sets;
     }
 
-    public String getIpv6Set() {
-        return ipv6Set;
+    /**
+     * Об'єднує нові набори з уже наявними для цього сімейства адрес.
+     *
+     * Кілька рядків import від одного peer-а (напр. для різних точок стику)
+     * дають об'єднання: приймаємо все, що дозволяє будь-який із них.
+     * Раніше спрацьовувало «перший виграв», і решта мовчки відкидалась.
+     */
+    void merge(AddressFamily af, List<String> sets) {
+        if (sets.isEmpty()) {
+            return;
+        }
+        List<String> current = getAcceptSets(af);
+        List<String> merged;
+        if (isAny(sets) || isAny(current)) {
+            merged = ANY;
+        } else {
+            merged = new ArrayList<>(current);
+            for (String s : sets) {
+                if (merged.stream().noneMatch(x -> x.equalsIgnoreCase(s))) {
+                    merged.add(s);
+                }
+            }
+            merged = List.copyOf(merged);
+        }
+        if (af.isV6()) {
+            ipv6Sets = merged;
+        } else {
+            ipv4Sets = merged;
+        }
     }
 
-    void setIpv4Set(String s) {
-        this.ipv4Set = s;
+    /** true, якщо набір означає {@code accept ANY} (фільтр не потрібен). */
+    public static boolean isAny(List<String> sets) {
+        return sets.size() == 1 && "ANY".equalsIgnoreCase(sets.get(0));
     }
 
-    void setIpv6Set(String s) {
-        this.ipv6Set = s;
-    }
-
-    /** Returns the accept set appropriate for the given address family.
-     * @param ipv6
-     * @return  */
-    public String getAcceptSet(boolean ipv6) {
-        return ipv6 ? ipv6Set : ipv4Set;
+    /** Людиночитне подання набору: {@code "AS-A OR AS-B"}. */
+    public static String format(List<String> sets) {
+        return sets.isEmpty() ? "(none)" : String.join(" OR ", sets);
     }
 
     @Override
     public String toString() {
-        return "AS" + peerAs + " [v4=" + ipv4Set + ", v6=" + ipv6Set + "]";
+        return "AS" + peerAs + " [v4=" + format(ipv4Sets) + ", v6=" + format(ipv6Sets) + "]";
     }
 }

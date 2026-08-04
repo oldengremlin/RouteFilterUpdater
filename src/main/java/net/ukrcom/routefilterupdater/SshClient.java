@@ -20,42 +20,57 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Low-level SSH client wrapping JSch.
- * Provides exec-channel commands and an interactive shell channel with prompt detection.
+ * Низькорівневий SSH-клієнт поверх JSch.
+ * Надає exec-канал для одиничних команд і інтерактивний shell-канал з розпізнаванням промптів.
  */
 public class SshClient implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(SshClient.class);
     private static final int CONNECT_TIMEOUT_MS = 10_000;
 
-    // Strips ANSI escape sequences and non-printable control characters from terminal output
-    private static final String ANSI_STRIP
-            = "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]|[\\x1B]\\[[0-9;]*[a-zA-Z]";
-
     private Session session;
     private String username;
 
-    // Shell channel state
+    // Патерни промптів залежать лише від username, тож компілюються один раз при connect()
+    private Pattern opPromptAtEnd;
+    private Pattern cfgPromptAtEnd;
+    private Pattern intermediatePrompt;
+    private Pattern promptLine;
+
+    // Стан shell-каналу
     private ChannelShell shellChannel;
     private InputStream shellIn;
-    private BufferedReader shellReader;
-    private OutputStream shellRawOut;
-    private BufferedWriter shellWriter;
+    private OutputStream shellOut;
+
+    // Декодер UTF-8 із власним станом: вивід читається довільними шматками,
+    // і межа шматка може розрізати багатобайтову послідовність навпіл.
+    // Незавершений «хвіст» переноситься у наступне читання через leftover.
+    private CharsetDecoder decoder;
+    private byte[] leftover = new byte[0];
 
     // -------------------------------------------------------------------------
-    // Session management
+    // Керування сесією
     // -------------------------------------------------------------------------
     public void connect(String host, String username, String password) throws JSchException {
         this.username = username;
+        this.opPromptAtEnd = JunosOutput.operationalPromptAtEnd(username);
+        this.cfgPromptAtEnd = JunosOutput.configPromptAtEnd(username);
+        this.intermediatePrompt = JunosOutput.intermediatePrompt(username);
+        this.promptLine = JunosOutput.promptLine(username);
+
         JSch jsch = new JSch();
         session = jsch.getSession(username, host, 22);
         session.setPassword(password);
-        // TODO: replace with known_hosts validation before production use
+        // TODO: замінити на перевірку known_hosts перед використанням поза довіреним сегментом
         session.setConfig("StrictHostKeyChecking", "no");
         session.setConfig("PreferredAuthentications", "password");
         session.setTimeout(CONNECT_TIMEOUT_MS);
@@ -64,8 +79,15 @@ public class SshClient implements AutoCloseable {
     }
 
     // -------------------------------------------------------------------------
-    // Exec channel (single command, returns stdout)
+    // Exec-канал (одна команда, повертає stdout)
     // -------------------------------------------------------------------------
+    /**
+     * Виконує команду й повертає її вивід.
+     *
+     * @throws IOException якщо команда не завершилася за {@code timeoutSeconds}.
+     *         Раніше в цьому випадку мовчки повертався частковий вивід — обрізаний
+     *         список сусідів виглядав як успішний результат.
+     */
     public String executeCommand(String command, int timeoutSeconds) throws JSchException, IOException {
         ChannelExec ch = (ChannelExec) session.openChannel("exec");
         ch.setCommand(command);
@@ -76,6 +98,8 @@ public class SshClient implements AutoCloseable {
             long deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1_000;
             StringBuilder sb = new StringBuilder();
             byte[] buf = new byte[8192];
+            boolean completed = false;
+
             while (System.currentTimeMillis() < deadline) {
                 if (in.available() > 0) {
                     int n = in.read(buf);
@@ -83,17 +107,26 @@ public class SshClient implements AutoCloseable {
                         sb.append(new String(buf, 0, n, StandardCharsets.UTF_8));
                     }
                 } else if (ch.isClosed()) {
+                    completed = true;
                     break;
                 } else {
-                    sleep(100);
+                    sleep(50);
                 }
             }
-            // drain
+            // Дочитуємо залишок, що встиг накопичитись у буфері
             while (in.available() > 0) {
                 int n = in.read(buf);
                 if (n > 0) {
                     sb.append(new String(buf, 0, n, StandardCharsets.UTF_8));
                 }
+            }
+
+            if (!completed && !ch.isClosed()) {
+                throw new IOException("Timeout (" + timeoutSeconds + "s) executing command: " + command);
+            }
+            int exit = ch.getExitStatus();
+            if (exit > 0) {
+                log.warn("Command exited with status {}: {}", exit, command);
             }
             return sb.toString();
         } finally {
@@ -102,7 +135,7 @@ public class SshClient implements AutoCloseable {
     }
 
     // -------------------------------------------------------------------------
-    // Shell channel (PTY / interactive)
+    // Shell-канал (PTY / інтерактивний)
     // -------------------------------------------------------------------------
     public void openShell() throws JSchException, IOException {
         shellChannel = (ChannelShell) session.openChannel("shell");
@@ -111,55 +144,50 @@ public class SshClient implements AutoCloseable {
         shellChannel.setPtySize(200, 50, 0, 0);
 
         shellIn = shellChannel.getInputStream();
-        shellReader = new BufferedReader(new InputStreamReader(shellIn, StandardCharsets.UTF_8));
-        shellRawOut = shellChannel.getOutputStream();
-        shellWriter = new BufferedWriter(new OutputStreamWriter(shellRawOut, StandardCharsets.UTF_8));
+        shellOut = shellChannel.getOutputStream();
+        decoder = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPLACE)
+                .onUnmappableCharacter(CodingErrorAction.REPLACE);
+        leftover = new byte[0];
 
         shellChannel.connect(3_000);
         log.debug("Shell channel opened (PTY vt100 200x50)");
     }
 
-    /** Send a line terminated with CR+LF (Junos expects \r\n).
+    /** Надсилає рядок із завершенням CR+LF (Junos очікує саме \r\n).
      * @param command
      * @throws java.io.IOException */
     public void sendLine(String command) throws IOException {
         log.debug("→ {}", command.trim());
-        shellWriter.write(command + "\r\n");
-        shellWriter.flush();
+        sendRaw((command + "\r\n").getBytes(StandardCharsets.UTF_8));
     }
 
-    /** Send raw bytes (e.g. Ctrl+D = 0x04, or large binary content).
+    /** Надсилає сирі байти (напр. Ctrl+D = 0x04 або великий блок конфігурації).
      * @param data
      * @throws java.io.IOException */
     public void sendRaw(byte[] data) throws IOException {
-        shellRawOut.write(data);
-        shellRawOut.flush();
+        shellOut.write(data);
+        shellOut.flush();
     }
 
     /**
-     * Wait for a Junos mode prompt using the configured username:
-     *   "operational" → user@host>
+     * Чекає на промпт відповідного режиму Junos:
+     *   "operational" → user@host&gt;
      *   "config"      → user@host#
      * @param mode
      * @param timeoutMs
-     * @return 
+     * @return
      * @throws java.io.IOException
      */
     public String waitForPrompt(String mode, int timeoutMs) throws IOException {
-        String promptRe = "config".equals(mode)
-                          ? Pattern.quote(username) + "@[^#]+#\\s*"
-                          : Pattern.quote(username) + "@[^>]+>\\s*";
-        Pattern target = Pattern.compile("(?s)" + promptRe + "$", Pattern.DOTALL);
-        // Skip intermediate prompts that appear mid-output (e.g. inside paged output)
-        Pattern skipper = Pattern.compile(
-                "(?s)^.*?" + Pattern.quote(username) + "@[^>#]+[>#](?![\\s\\r\\n]*$)",
-                Pattern.DOTALL);
-        return doWait(target, skipper, timeoutMs, "prompt(" + mode + ")");
+        Pattern target = "config".equals(mode) ? cfgPromptAtEnd : opPromptAtEnd;
+        // Проміжні промпти всередині виводу пропускаємо, щоб не сплутати з фінальним
+        return doWait(target, intermediatePrompt, timeoutMs, "prompt(" + mode + ")");
     }
 
     /**
-     * Wait until the accumulated output matches an arbitrary regex.
-     * Useful for non-prompt markers like "[Type ^D".
+     * Чекає, доки накопичений вивід не збігатиметься із заданим регексом.
+     * Потрібно для не-промптових маркерів на кшталт "[Type ^D".
      * @param regex
      * @param timeoutMs
      * @return
@@ -171,22 +199,18 @@ public class SshClient implements AutoCloseable {
     }
 
     /**
-     * After sending "commit and-quit", waits for one of two outcomes:
-     *   - operational prompt (&gt;) → commit succeeded, returns accumulated output
-     *   - config prompt (#) with "error:" in output → commit failed, throws IOException
-     *   - timeout → throws IOException
+     * Після "commit and-quit" очікує на один із двох результатів:
+     *   - промпт операційного режиму (&gt;) → коміт успішний, повертає накопичений вивід
+     *   - промпт режиму конфігурації (#) разом з "error:" → коміт провалено, кидає IOException
+     *   - таймаут → кидає IOException
      *
-     * Unlike waitForPrompt, no skipper is applied: we need to see the final prompt
-     * to determine which mode the router ended up in.
+     * На відміну від waitForPrompt, тут не застосовується skipper: потрібно побачити
+     * саме фінальний промпт, щоб визначити, в якому режимі лишився роутер.
      * @param timeoutMs
-     * @return accumulated output on success
-     * @throws java.io.IOException on commit failure or timeout
+     * @return накопичений вивід у разі успіху
+     * @throws java.io.IOException при провалі коміту або таймауті
      */
     public String waitForCommit(int timeoutMs) throws IOException {
-        Pattern opPrompt  = Pattern.compile(
-                Pattern.quote(username) + "@[^>]+>\\s*$", Pattern.DOTALL);
-        Pattern cfgPrompt = Pattern.compile(
-                Pattern.quote(username) + "@[^#]+#\\s*$", Pattern.DOTALL);
         Pattern errMarker = Pattern.compile("(?m)^error:");
 
         long deadline = System.currentTimeMillis() + timeoutMs;
@@ -195,21 +219,16 @@ public class SshClient implements AutoCloseable {
         while (System.currentTimeMillis() < deadline) {
             String chunk = readAvailable();
             if (!chunk.isEmpty()) {
-                chunk = chunk.replaceAll(ANSI_STRIP, "");
+                chunk = JunosOutput.stripAnsi(chunk);
                 acc.append(chunk);
-                if (log.isDebugEnabled() && chunk.length() > 1) {
-                    String tail = chunk.length() > 120
-                            ? "…" + chunk.substring(chunk.length() - 120) : chunk;
-                    log.debug("← [{}]", tail.replace("\n", "↵").replace("\r", ""));
-                }
+                logChunk(chunk);
                 String s = acc.toString();
-                if (opPrompt.matcher(s).find()) {
+                if (opPromptAtEnd.matcher(s).find()) {
                     log.debug("Commit: operational prompt detected (success)");
                     return s.trim();
                 }
-                if (cfgPrompt.matcher(s).find() && errMarker.matcher(s).find()) {
-                    String errDetails = extractCommitErrors(s);
-                    throw new IOException("Commit failed:\n" + errDetails);
+                if (cfgPromptAtEnd.matcher(s).find() && errMarker.matcher(s).find()) {
+                    throw new IOException("Commit failed:\n" + extractCommitErrors(s));
                 }
             } else {
                 sleep(10);
@@ -224,20 +243,17 @@ public class SshClient implements AutoCloseable {
     private String extractCommitErrors(String output) {
         StringBuilder sb = new StringBuilder();
         for (String line : output.split("\n")) {
-            String clean = line.replaceAll(ANSI_STRIP, "").trim();
+            String clean = JunosOutput.stripAnsi(line).trim();
             if (clean.isBlank()) continue;
-            // Skip Junos prompt lines (user@host> or user@host#)
-            if (username != null
-                    && clean.matches(Pattern.quote(username) + "@[^>#]+[>#].*")) continue;
-            // Skip mode indicators like {master}[edit]
-            if (clean.matches("\\{[^}]*\\}.*")) continue;
+            if (promptLine.matcher(clean).matches()) continue;      // user@host> / user@host#
+            if (JunosOutput.isModeIndicator(clean)) continue;       // {master}[edit]
             sb.append(clean).append("\n");
         }
         return sb.toString().trim();
     }
 
     // -------------------------------------------------------------------------
-    // Internal
+    // Внутрішнє
     // -------------------------------------------------------------------------
     private String doWait(Pattern target, Pattern skipper, int timeoutMs, String label)
             throws IOException {
@@ -247,7 +263,7 @@ public class SshClient implements AutoCloseable {
         while (System.currentTimeMillis() < deadline) {
             String chunk = readAvailable();
             if (!chunk.isEmpty()) {
-                chunk = chunk.replaceAll(ANSI_STRIP, "");
+                chunk = JunosOutput.stripAnsi(chunk);
                 if (skipper != null) {
                     Matcher m = skipper.matcher(chunk);
                     if (m.find()) {
@@ -255,10 +271,7 @@ public class SshClient implements AutoCloseable {
                     }
                 }
                 acc.append(chunk);
-                if (log.isDebugEnabled() && chunk.length() > 1) {
-                    String tail = chunk.length() > 120 ? "…" + chunk.substring(chunk.length() - 120) : chunk;
-                    log.debug("← [{}]", tail.replace("\n", "↵").replace("\r", ""));
-                }
+                logChunk(chunk);
                 if (target.matcher(acc.toString()).find()) {
                     log.debug("Pattern matched: {}", label);
                     return acc.toString().trim();
@@ -273,18 +286,37 @@ public class SshClient implements AutoCloseable {
         throw new IOException("Timeout waiting for: " + label);
     }
 
+    private static void logChunk(String chunk) {
+        if (log.isDebugEnabled() && chunk.length() > 1) {
+            String tail = chunk.length() > 120 ? "…" + chunk.substring(chunk.length() - 120) : chunk;
+            log.debug("← [{}]", tail.replace("\n", "↵").replace("\r", ""));
+        }
+    }
+
+    /**
+     * Читає доступні байти й декодує їх як UTF-8, зберігаючи незавершений
+     * багатобайтовий «хвіст» до наступного виклику.
+     */
     private String readAvailable() throws IOException {
-        if (shellReader.ready()) {
-            char[] buf = new char[16384];
-            int n = shellReader.read(buf);
-            return n > 0 ? new String(buf, 0, n) : "";
+        int avail = shellIn.available();
+        if (avail <= 0) {
+            return "";
         }
-        if (shellIn.available() > 0) {
-            byte[] raw = new byte[shellIn.available()];
-            int n = shellIn.read(raw);
-            return n > 0 ? new String(raw, 0, n, StandardCharsets.UTF_8) : "";
+        byte[] buf = new byte[avail];
+        int n = shellIn.read(buf);
+        if (n <= 0) {
+            return "";
         }
-        return "";
+
+        ByteBuffer bb = ByteBuffer.allocate(leftover.length + n);
+        bb.put(leftover).put(buf, 0, n).flip();
+        CharBuffer cb = CharBuffer.allocate(leftover.length + n);
+        decoder.decode(bb, cb, false);
+
+        leftover = new byte[bb.remaining()];
+        bb.get(leftover);
+        cb.flip();
+        return cb.toString();
     }
 
     public void closeShell() {
