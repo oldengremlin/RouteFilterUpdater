@@ -78,17 +78,12 @@ public class FilterGenerator {
             }
         }
 
-        // Зі --strict-rpsl-reverse кожна політика тягне ще й WHOIS-запит. Якщо він піде
-        // в живий WHOIS, шість паралельних з'єднань RADB рве — тому беремо менше з двох меж.
-        int concurrency = strictRpslReverse
-                ? Math.min(BGPQ4_CONCURRENCY, whoisFetcher.recommendedConcurrency())
-                : BGPQ4_CONCURRENCY;
-
-        log.info("Generating {} unique filters ({}), up to {} in parallel...",
-                policyToNeighbor.size(), af.label(), concurrency);
+        log.info("Generating {} unique filters ({}), up to {} bgpq4 + {} WHOIS/SQLite in parallel...",
+                policyToNeighbor.size(), af.label(), BGPQ4_CONCURRENCY,
+                whoisFetcher.recommendedConcurrency());
 
         List<PolicyOutcome> outcomes = runInParallel(
-                policyToNeighbor, policies, af, strictRpsl, strictRpslReverse, concurrency);
+                policyToNeighbor, policies, af, strictRpsl, strictRpslReverse);
 
         // Збірка результату в порядку сусідів — щоб файл і диф читались передбачувано
         StringBuilder output = new StringBuilder();
@@ -137,14 +132,19 @@ public class FilterGenerator {
     /**
      * Виконує обробку політик паралельно, але повертає результати строго в порядку подачі.
      * Логування винесено назовні саме заради збереження порядку.
+     *
+     * Два незалежні семафори замість одного: запуски bgpq4 і WHOIS/SQLite-запити мають
+     * різну пропускну здатність (процеси vs rate limit RADB), і раніше спільний ліміт
+     * стискав bgpq4 до пропускної здатності WHOIS, коли обидва працювали разом
+     * (--strict-rpsl-reverse без --sqlite: bgpq4 обмежувався до 3 замість повних 6).
      */
     private List<PolicyOutcome> runInParallel(Map<String, BgpNeighbor> policyToNeighbor,
                                               Map<Long, WhoisPolicy> policies,
                                               AddressFamily af,
                                               boolean strictRpsl,
-                                              boolean strictRpslReverse,
-                                              int concurrency) throws Exception {
-        Semaphore permits = new Semaphore(concurrency);
+                                              boolean strictRpslReverse) throws Exception {
+        Semaphore bgpqPermits = new Semaphore(BGPQ4_CONCURRENCY);
+        Semaphore whoisPermits = new Semaphore(whoisFetcher.recommendedConcurrency());
         List<PolicyOutcome> outcomes = new ArrayList<>(policyToNeighbor.size());
 
         try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
@@ -152,15 +152,8 @@ public class FilterGenerator {
             for (var entry : policyToNeighbor.entrySet()) {
                 String importPolicy = entry.getKey();
                 BgpNeighbor neighbor = entry.getValue();
-                futures.add(exec.submit(() -> {
-                    permits.acquire();
-                    try {
-                        return process(importPolicy, neighbor, policies, af,
-                                strictRpsl, strictRpslReverse);
-                    } finally {
-                        permits.release();
-                    }
-                }));
+                futures.add(exec.submit(() -> process(importPolicy, neighbor, policies, af,
+                        strictRpsl, strictRpslReverse, bgpqPermits, whoisPermits)));
             }
             for (Future<PolicyOutcome> f : futures) {
                 outcomes.add(f.get());
@@ -172,7 +165,8 @@ public class FilterGenerator {
     /** Обробка однієї import-політики. Винятки не випускає — повертає статус FAILED. */
     private PolicyOutcome process(String importPolicy, BgpNeighbor neighbor,
                                   Map<Long, WhoisPolicy> policies, AddressFamily af,
-                                  boolean strictRpsl, boolean strictRpslReverse) {
+                                  boolean strictRpsl, boolean strictRpslReverse,
+                                  Semaphore bgpqPermits, Semaphore whoisPermits) {
         long peerAs = neighbor.peerAs();
         List<String> warnings = new ArrayList<>();
 
@@ -212,13 +206,32 @@ public class FilterGenerator {
                     "AS" + peerAs + " accepts ANY (permit-all, no prefix filter needed)", warnings);
         }
 
-        if (strictRpslReverse) {
-            checkReverse(peerAs, af, acceptSets, warnings);
-        }
-
-        String asName = whoisFetcher.fetchAsName(peerAs);
         try {
-            String filter = bgpq4.generateFilter(importPolicy, af, acceptSets);
+            if (strictRpslReverse) {
+                whoisPermits.acquire();
+                try {
+                    checkReverse(peerAs, af, acceptSets, warnings);
+                } finally {
+                    whoisPermits.release();
+                }
+            }
+
+            String asName;
+            whoisPermits.acquire();
+            try {
+                asName = whoisFetcher.fetchAsName(peerAs);
+            } finally {
+                whoisPermits.release();
+            }
+
+            String filter;
+            bgpqPermits.acquire();
+            try {
+                filter = bgpq4.generateFilter(importPolicy, af, acceptSets);
+            } finally {
+                bgpqPermits.release();
+            }
+
             if (filter.isBlank()) {
                 return PolicyOutcome.skipped(importPolicy, neighbor,
                         "bgpq4 returned no prefixes for " + WhoisPolicy.format(acceptSets), warnings);
