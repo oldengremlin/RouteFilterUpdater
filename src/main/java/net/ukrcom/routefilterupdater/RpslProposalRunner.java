@@ -38,7 +38,8 @@ import java.util.concurrent.Semaphore;
  *   5. peer ANY    → попередження
  *   6. немає export → повідомлення
  *
- * Вивід іде лише в stdout; для збереження у файл користуйтесь перенаправленням оболонки.
+ * Повертає повний текстовий звіт (для stdout і для email при -r), а не друкує його сам —
+ * так само, як FilterGenerator повертає текст замість запису у файл.
  * Дедуплікація за peerAs (а не за importPolicy) — щоб не робити зайвих запитів.
  */
 public class RpslProposalRunner {
@@ -54,9 +55,15 @@ public class RpslProposalRunner {
     }
 
     /**
-     * @return true, якщо виявлено розбіжності або помилки (для коду виходу)
+     * Результат перевірки.
+     *
+     * @param report      повний текстовий звіт у форматі [MISMATCH]/[MISSING]/... з підсумком
+     * @param hasProblems true, якщо виявлено розбіжності або помилки (для коду виходу й теми листа)
      */
-    public boolean run(AddressFamily af) throws Exception {
+    public record RpslProposalResult(String report, boolean hasProblems) {
+    }
+
+    public RpslProposalResult run(AddressFamily af) throws Exception {
         Map<Long, WhoisPolicy> selfPolicies = whoisFetcher.fetchSelfAsPolicies(config.selfAs);
         List<BgpNeighbor> neighbors = NeighborLoader.load(config, af);
 
@@ -72,6 +79,7 @@ public class RpslProposalRunner {
 
         List<PeerOutcome> outcomes = check(asnToNeighbor, selfPolicies, af, concurrency);
 
+        StringBuilder sb = new StringBuilder();
         int matched = 0, mismatched = 0, warnings = 0, noExport = 0, errors = 0;
         for (PeerOutcome o : outcomes) {
             switch (o.kind()) {
@@ -80,54 +88,56 @@ public class RpslProposalRunner {
                     matched++;
                 }
                 case MISMATCH -> {
-                    System.out.printf("%s[MISMATCH]  %s%n", o.privateTag(), o.header());
-                    System.out.printf("  our import:   %s%n", WhoisPolicy.format(o.ourAccept()));
-                    System.out.printf("  peer exports: %s%n", WhoisPolicy.format(o.peerExport()));
-                    System.out.printf("  proposed: %s%n%n", proposal(af, o));
+                    sb.append(o.privateTag()).append("[MISMATCH]  ").append(o.header()).append('\n');
+                    sb.append("  our import:   ").append(WhoisPolicy.format(o.ourAccept())).append('\n');
+                    sb.append("  peer exports: ").append(WhoisPolicy.format(o.peerExport())).append('\n');
+                    sb.append("  proposed: ").append(proposal(af, o)).append("\n\n");
                     mismatched++;
                 }
                 case MISSING -> {
-                    System.out.printf("%s[MISSING]   %s%n", o.privateTag(), o.header());
-                    System.out.printf("  we have no %s import for this peer in AS%d WHOIS%n",
-                            af.label(), config.selfAs);
-                    System.out.printf("  peer exports: %s%n", WhoisPolicy.format(o.peerExport()));
-                    System.out.printf("  proposed: %s%n%n", proposal(af, o));
+                    sb.append(o.privateTag()).append("[MISSING]   ").append(o.header()).append('\n');
+                    sb.append("  we have no ").append(af.label())
+                            .append(" import for this peer in AS").append(config.selfAs)
+                            .append(" WHOIS\n");
+                    sb.append("  peer exports: ").append(WhoisPolicy.format(o.peerExport())).append('\n');
+                    sb.append("  proposed: ").append(proposal(af, o)).append("\n\n");
                     mismatched++;
                 }
                 case ANY_WARNING -> {
-                    System.out.printf("%s[WARNING]   %s%n", o.privateTag(), o.header());
-                    System.out.printf("  peer exports ANY to AS%d — no specific prefix set declared%n%n",
-                            config.selfAs);
+                    sb.append(o.privateTag()).append("[WARNING]   ").append(o.header()).append('\n');
+                    sb.append("  peer exports ANY to AS").append(config.selfAs)
+                            .append(" — no specific prefix set declared\n\n");
                     warnings++;
                 }
                 case NO_EXPORT -> {
-                    System.out.printf("%s[NO-EXPORT] %s%n", o.privateTag(), o.header());
-                    System.out.printf("  peer has no %s export to AS%d in WHOIS%n%n",
-                            af.label(), config.selfAs);
+                    sb.append(o.privateTag()).append("[NO-EXPORT] ").append(o.header()).append('\n');
+                    sb.append("  peer has no ").append(af.label()).append(" export to AS")
+                            .append(config.selfAs).append(" in WHOIS\n\n");
                     noExport++;
                 }
                 case UNSUPPORTED -> {
-                    System.out.printf("%s[UNSUPPORTED] %s%n", o.privateTag(), o.header());
-                    System.out.printf("  our %s import is not expressible for bgpq4: %s%n",
-                            af.label(), o.error());
-                    System.out.printf("  peer exports: %s%n", WhoisPolicy.format(o.peerExport()));
-                    System.out.printf("  proposed: %s%n%n", proposal(af, o));
+                    sb.append(o.privateTag()).append("[UNSUPPORTED] ").append(o.header()).append('\n');
+                    sb.append("  our ").append(af.label())
+                            .append(" import is not expressible for bgpq4: ")
+                            .append(o.error()).append('\n');
+                    sb.append("  peer exports: ").append(WhoisPolicy.format(o.peerExport())).append('\n');
+                    sb.append("  proposed: ").append(proposal(af, o)).append("\n\n");
                     mismatched++;
                 }
                 case ERROR -> {
-                    System.out.printf("%s[ERROR]     %s%n", o.privateTag(), o.header());
-                    System.out.printf("  WHOIS lookup failed: %s%n%n", o.error());
+                    sb.append(o.privateTag()).append("[ERROR]     ").append(o.header()).append('\n');
+                    sb.append("  WHOIS lookup failed: ").append(o.error()).append("\n\n");
                     errors++;
                 }
             }
         }
 
-        System.out.printf(
+        sb.append(String.format(
                 "--- %s: %d checked, %d matched, %d mismatched/missing, %d ANY warnings, "
                 + "%d no-export, %d errors%n",
-                af.label(), asnToNeighbor.size(), matched, mismatched, warnings, noExport, errors);
+                af.label(), asnToNeighbor.size(), matched, mismatched, warnings, noExport, errors));
 
-        return mismatched > 0 || errors > 0;
+        return new RpslProposalResult(sb.toString(), mismatched > 0 || errors > 0);
     }
 
     private static String proposal(AddressFamily af, PeerOutcome o) {

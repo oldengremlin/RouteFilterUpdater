@@ -22,13 +22,15 @@ import ch.qos.logback.core.ConsoleAppender;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.io.RandomAccessFile;
+import java.io.StringWriter;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
@@ -51,8 +53,6 @@ public class RouteFilterUpdater {
     private static final Logger log = LoggerFactory.getLogger(RouteFilterUpdater.class);
 
     private static final String PROPERTIES_FILE = "RouteFilterUpdater.properties";
-    private static final String LOCK_FILE
-            = System.getProperty("java.io.tmpdir") + File.separator + "RouteFilterUpdater.lock";
 
     private static final int EXIT_OK = 0;
     private static final int EXIT_FATAL = 1;
@@ -71,21 +71,56 @@ public class RouteFilterUpdater {
             System.exit(EXIT_FATAL);
         }
 
+        Path lockPath;
+        try {
+            lockPath = prepareLockFile();
+        } catch (IOException e) {
+            System.err.println("Cannot prepare lock file: " + e.getMessage());
+            System.exit(EXIT_FATAL);
+            return;
+        }
+
         // Блокування через FileLock, а не через наявність файлу: ОС звільняє його
         // навіть при kill -9, тож «застряглий» lock більше не блокує наступні запуски.
-        try (RandomAccessFile lockFile = new RandomAccessFile(LOCK_FILE, "rw");
+        try (RandomAccessFile lockFile = new RandomAccessFile(lockPath.toFile(), "rw");
              FileLock lock = tryLock(lockFile)) {
 
             if (lock == null) {
-                System.err.println("Another instance is already running (lock: " + LOCK_FILE + ")");
+                System.err.println("Another instance is already running (lock: " + lockPath + ")");
                 System.exit(EXIT_FATAL);
             }
             System.exit(run(args));
 
         } catch (IOException e) {
-            System.err.println("Cannot access lock file " + LOCK_FILE + ": " + e.getMessage());
+            System.err.println("Cannot access lock file " + lockPath + ": " + e.getMessage());
             System.exit(EXIT_FATAL);
         }
+    }
+
+    /**
+     * Готує шлях до lock-файла у приватному каталозі користувача.
+     *
+     * Раніше файл із фіксованим іменем створювався у спільному {@code /tmp}: інший
+     * локальний користувач міг заздалегідь підкласти туди symlink, і відкриття в режимі
+     * "rw" створило б файл за довільним шляхом від імені власника процесу (CWE-59).
+     * Тепер каталог належить лише власнику (0700), а symlink на місці lock-файла
+     * призводить до відмови запуску, а не до переходу за посиланням.
+     */
+    private static Path prepareLockFile() throws IOException {
+        Path dir = Path.of(System.getProperty("user.home"), ".cache", "RouteFilterUpdater");
+        Files.createDirectories(dir);
+        try {
+            Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"));
+        } catch (UnsupportedOperationException | IOException e) {
+            // Не-POSIX ФС (напр. Windows) — права виставити не вдалось, це не привід падати
+            System.err.println("Warning: cannot restrict permissions on " + dir + ": " + e.getMessage());
+        }
+
+        Path lock = dir.resolve("RouteFilterUpdater.lock");
+        if (Files.isSymbolicLink(lock)) {
+            throw new IOException("lock path is a symbolic link, refusing to follow: " + lock);
+        }
+        return lock;
     }
 
     /**
@@ -112,6 +147,8 @@ public class RouteFilterUpdater {
         try {
             config = new Config(PROPERTIES_FILE);
         } catch (Exception e) {
+            // Єдина відмова, про яку неможливо повідомити поштою: SMTP-налаштування
+            // читаються з того самого файла, який не вдалося прочитати.
             System.err.println("Configuration error: " + e.getMessage());
             return EXIT_FATAL;
         }
@@ -123,13 +160,23 @@ public class RouteFilterUpdater {
         try (WhoisFetcher whois = new WhoisFetcher(config.whoisServer, args.sqlitePath)) {
             if (args.rpslProposal) {
                 // Автономний режим: фільтри не генеруються, конфігурація не застосовується
-                boolean problems = new RpslProposalRunner(config, whois).run(args.family);
+                var result = new RpslProposalRunner(config, whois).run(args.family);
+                System.out.print(result.report());
+                if (args.report) {
+                    sendProposalReport(args, config, ts, result);
+                }
                 log.info("=== RouteFilterUpdater completed ===");
-                return problems ? EXIT_PROBLEMS : EXIT_OK;
+                return result.hasProblems() ? EXIT_PROBLEMS : EXIT_OK;
             }
             return generateAndApply(args, config, whois, ts);
         } catch (Exception e) {
             log.error("Fatal: {}", e.getMessage(), e);
+            // Саме тут -r найпотрібніший: роутер недоступний, WHOIS ліг, bgpq4 зник.
+            // Раніше лист ішов лише після успішної генерації, тож про справжню аварію
+            // під `-q -r` у cron не дізнавався ніхто.
+            if (args.report) {
+                sendFailureReport(args, config, ts, e);
+            }
             return EXIT_FATAL;
         }
     }
@@ -225,8 +272,43 @@ public class RouteFilterUpdater {
                 .append(String.format("%d generated, %d skipped, %d failed%n",
                         result.generated(), result.skipped(), result.failed()));
 
+        send(config, subject, body.toString());
+    }
+
+    /** Звіт про фатальну помилку — коли до генерації фільтрів справа не дійшла. */
+    private static void sendFailureReport(Args args, Config config, String ts, Exception e) {
+        String subject = String.format("RouteFilterUpdater [%s] FAILED — %s",
+                args.family.label(), ts);
+
+        StringWriter trace = new StringWriter();
+        e.printStackTrace(new PrintWriter(trace));
+
+        String body = "=== RouteFilterUpdater FAILED ===\n\n"
+                + "Version:  " + version() + "\n"
+                + "Family:   " + args.family.label() + "\n"
+                + "Started:  " + ts + "\n"
+                + "Router:   " + config.routerIp(args.family) + "\n\n"
+                + "Error: " + e.getMessage() + "\n\n"
+                + "=== Stack trace ===\n\n" + trace;
+
+        send(config, subject, body);
+    }
+
+    /** Звіт режиму --rpsl-proposal (той самий текст, що йде в stdout). */
+    private static void sendProposalReport(Args args, Config config, String ts,
+                                           RpslProposalRunner.RpslProposalResult result) {
+        String subject = String.format("RouteFilterUpdater [%s] RPSL proposal%s — %s",
+                args.family.label(), result.hasProblems() ? " (issues found)" : " (all consistent)", ts);
+
+        String body = "=== RPSL Consistency Check (" + args.family.label() + ") ===\n\n"
+                + result.report();
+
+        send(config, subject, body);
+    }
+
+    private static void send(Config config, String subject, String body) {
         try {
-            new EmailReporter(config).send(subject, body.toString());
+            new EmailReporter(config).send(subject, body);
         } catch (Exception e) {
             log.error("Failed to send report: {}", e.getMessage());
         }
